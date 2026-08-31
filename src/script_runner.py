@@ -12,13 +12,13 @@ doesn't.
 
 DEFAULT_SCRIPT = [
     ["press", "ENTER", 0.1],
-    ["wait", 5.5],
+    ["wait", 1.5],
     ["press", "ENTER", 0.1],
     ["wait", 1.5],
     ["press", "ONE", 0.1],
     ["wait", 3],
     ["press", "TWO", 0.1],
-    ["wait", 3],
+    ["wait", 6],
 ]
 
 

@@ -55,24 +55,43 @@ try:
 
     @server.route("/start")
     def start_handler(request):
+        if not runner.script:
+            return Response(request, "error: no script loaded", status=(400, "Bad Request"))
+
         times_param = request.query_params.get("times")
-        times = int(times_param) if times_param else None
-        runner.start(times)
-        return Response(request, "started")
+        try:
+            times = int(times_param) if times_param else None
+        except ValueError:
+            return Response(
+                request,
+                "error: times must be a whole number, got '{}'".format(times_param),
+                status=(400, "Bad Request"),
+            )
+
+        verbose_param = request.query_params.get("verbose")
+        verbose = verbose_param in ("1", "true", "True")
+
+        runner.start(times, verbose)
+        return Response(request, "ok")
 
     @server.route("/stop")
     def stop_handler(request):
         runner.stop()
-        return Response(request, "stopping")
+        return Response(request, "ok")
 
     @server.route("/update", methods=["POST"])
     def update_handler(request):
         global reload_requested
-        new_script = request.json()
+        try:
+            new_script = request.json()
+        except Exception as e:
+            return Response(
+                request, "error: invalid JSON body ({})".format(e), status=(400, "Bad Request")
+            )
         with open("/script.json", "w") as f:
             json.dump(new_script, f)
         reload_requested = True
-        return Response(request, "updated, restarting")
+        return Response(request, "ok, restarting")
 
     @server.route("/status")
     def status_handler(request):

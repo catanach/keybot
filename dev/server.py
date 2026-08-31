@@ -8,7 +8,8 @@ Run it with:
 
 Then hit it exactly like you would the real Pico, e.g.:
     curl http://localhost:8085/status
-    curl http://localhost:8085/start?times=2
+    curl "http://localhost:8085/start?times=2"
+    curl "http://localhost:8085/start?times=2&verbose=1"
     curl http://localhost:8085/stop
     curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
 """
@@ -34,7 +35,6 @@ except OSError:
 
 
 def press_fn(keycode_name, hold):
-    print(f"  press {keycode_name} (hold {hold}s)")
     time.sleep(hold)
 
 
@@ -52,7 +52,6 @@ runner = ScriptRunner(SCRIPT, press_fn, sleep_fn)
 def background_loop():
     while True:
         if runner.running:
-            print(f"--- starting loop {runner.loop_count + 1} ---")
             runner.run_one_pass()
         else:
             time.sleep(0.1)
@@ -80,12 +79,28 @@ class Handler(BaseHTTPRequestHandler):
         params = parse_qs(parsed.query)
 
         if parsed.path == "/start":
-            times = params.get("times", [None])[0]
-            runner.start(int(times) if times else None)
-            self._send_text("started")
+            if not runner.script:
+                self._send_text("error: no script loaded", code=400)
+                return
+
+            times_param = params.get("times", [None])[0]
+            try:
+                times = int(times_param) if times_param else None
+            except ValueError:
+                self._send_text(
+                    "error: times must be a whole number, got '{}'".format(times_param),
+                    code=400,
+                )
+                return
+
+            verbose_param = params.get("verbose", [None])[0]
+            verbose = verbose_param in ("1", "true", "True")
+
+            runner.start(times, verbose)
+            self._send_text("ok")
         elif parsed.path == "/stop":
             runner.stop()
-            self._send_text("stopping")
+            self._send_text("ok")
         elif parsed.path == "/status":
             self._send_json(runner.status())
         else:
@@ -96,11 +111,15 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/update":
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
-            new_script = json.loads(body)
+            try:
+                new_script = json.loads(body)
+            except json.JSONDecodeError as e:
+                self._send_text("error: invalid JSON body ({})".format(e), code=400)
+                return
             runner.set_script(new_script)
             with open(SCRIPT_FILE, "w") as f:
                 json.dump(new_script, f)
-            self._send_text("updated")
+            self._send_text("ok")
         else:
             self._send_text("not found", code=404)
 

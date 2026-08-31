@@ -39,11 +39,12 @@ Any time you change something in `src/` or `lib/`, plug the Pico into your Mac a
 
 ## Using it
 
-- `http://<pico-ip>:5000/start` begins running the script in `script.json` (or the built-in default if none has been pushed yet), looping until stopped.
+- `http://<pico-ip>:5000/start` begins running the script in `script.json` (or the built-in default if none has been pushed yet), looping until stopped. Returns `ok`, or an error message with an explanation if something's wrong (like a missing script).
 - `http://<pico-ip>:5000/start?times=5` runs the script exactly 5 times and then stops on its own.
-- `http://<pico-ip>:5000/stop` stops it early.
+- `http://<pico-ip>:5000/start?verbose=1` prints each step as it runs (handy while a serial console is attached). Leave this off for quiet, normal use; it can be combined with `times`, e.g. `?times=5&verbose=1`.
+- `http://<pico-ip>:5000/stop` stops it early. Returns `ok`.
 - `http://<pico-ip>:5000/status` reports the current state as JSON: whether it's running, how many loops it's completed, which step it's on, the total number of steps, and the target loop count (`null` if it was started without a `times` value).
-- `http://<pico-ip>:5000/update` (POST, with a JSON body like `[["press", "ENTER", 0.1], ["wait", 5]]`) saves a new script and restarts the board to start using it immediately.
+- `http://<pico-ip>:5000/update` (POST, with a JSON body like `[["press", "ENTER", 0.1], ["wait", 5]]`) saves a new script and restarts the board to start using it immediately. Returns `ok, restarting`, or an error message if the JSON body is invalid.
 
 ## Developing without the Pico
 
@@ -58,6 +59,7 @@ Then in another Terminal tab, hit it exactly like you would the real Pico:
 ```
 curl http://localhost:8085/status
 curl "http://localhost:8085/start?times=2"
+curl "http://localhost:8085/start?times=2&verbose=1"
 curl http://localhost:8085/stop
 curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
 ```

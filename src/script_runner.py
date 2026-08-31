@@ -32,9 +32,11 @@ class ScriptRunner:
         self.loop_count = 0
         self.current_step = 0
         self.target_loops = None  # None means "loop forever until stopped"
+        self.verbose = False  # when True, prints each step as it runs
 
-    def start(self, times=None):
+    def start(self, times=None, verbose=False):
         self.target_loops = times
+        self.verbose = verbose
         self.loop_count = 0
         self.current_step = 0
         self.running = True
@@ -60,15 +62,23 @@ class ScriptRunner:
 
         Call this repeatedly from your main loop whenever self.running is
         True. It updates loop_count, current_step, and running/stop_requested
-        as it goes, and stops itself once target_loops is reached.
+        as it goes, and stops itself once target_loops is reached. When
+        self.verbose is True, it prints each step as it happens.
         """
+        if self.verbose:
+            print("--- starting loop {} ---".format(self.loop_count + 1))
+
         for i, step in enumerate(self.script):
             if self.stop_requested:
                 break
             self.current_step = i
             if step[0] == "press":
+                if self.verbose:
+                    print("step {}: press {} (hold {}s)".format(i, step[1], step[2]))
                 self.press_fn(step[1], step[2])
             elif step[0] == "wait":
+                if self.verbose:
+                    print("step {}: wait {}s".format(i, step[1]))
                 self.sleep_fn(step[1])
                 if self.stop_requested:
                     break

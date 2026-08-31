@@ -3,3 +3,4 @@ src/settings.toml
 *.pyc
 __pycache__/
 lib/*.uf2
+dev/script.json

@@ -53,7 +53,8 @@ elif [ -f "$CIRCUITPY_VOLUME/boot.py" ]; then
     echo "Removed boot.py (none in src/)."
 fi
 cp "$SRC_DIR/code.py" "$CIRCUITPY_VOLUME/code.py"
-echo "Copied code.py."
+cp "$SRC_DIR/script_runner.py" "$CIRCUITPY_VOLUME/script_runner.py"
+echo "Copied code.py and script_runner.py."
 
 if [ -f "$SRC_DIR/settings.toml" ]; then
     cp "$SRC_DIR/settings.toml" "$CIRCUITPY_VOLUME/settings.toml"

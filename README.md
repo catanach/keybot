@@ -1,4 +1,4 @@
-# ps5-bot
+# keybot
 
 Files and a deploy script for the Raspberry Pi Pico WH keyboard-emulation project.
 

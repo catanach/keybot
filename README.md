@@ -41,14 +41,18 @@ Any time you change something in `src/` or `lib/`, plug the Pico into your Mac a
 
 - `http://<pico-ip>:5000/start` begins running the script in `script.json` (or the built-in default if none has been pushed yet), looping until stopped. Returns `ok`, or an error message with an explanation if something's wrong (like a missing script).
 - `http://<pico-ip>:5000/start?times=5` runs the script exactly 5 times and then stops on its own.
-- `http://<pico-ip>:5000/start?verbose=1` prints each step as it runs (handy while a serial console is attached). Leave this off for quiet, normal use; it can be combined with `times`, e.g. `?times=5&verbose=1`.
 - `http://<pico-ip>:5000/stop` stops it early. Returns `ok`.
-- `http://<pico-ip>:5000/status` reports the current state as JSON: whether it's running, how many loops it's completed, which step it's on, the total number of steps, and the target loop count (`null` if it was started without a `times` value).
+- `http://<pico-ip>:5000/status` reports the current state as JSON, meant for polling while a script runs:
+  - `running` — whether it's currently going
+  - `loop_count` — how many full passes it's completed
+  - `target_loops` — how many were requested (`null` if started without a `times` value, meaning it loops forever until stopped)
+  - `current_step` / `total_steps` — which step it's on within the current pass
+  - `estimated_seconds_remaining` — a rough estimate of how much longer it'll take, based on the script's own wait times (`null` when `target_loops` is `null`, since there's no fixed end point to estimate toward)
 - `http://<pico-ip>:5000/update` (POST, with a JSON body like `[["press", "ENTER", 0.1], ["wait", 5]]`) saves a new script and restarts the board to start using it immediately. Returns `ok, restarting`, or an error message if the JSON body is invalid.
 
 ## Developing without the Pico
 
-`dev/server.py` runs the exact same routes and script logic on your Mac, so you can write and test a script before pushing it to the actual hardware. It doesn't press real keys, it just prints what it would press.
+`dev/server.py` runs the exact same routes and script logic on your Mac, so you can write and test a script before pushing it to the actual hardware. It doesn't press real keys, it just waits the same amount of time a real press would take.
 
 ```
 python3 dev/server.py
@@ -59,7 +63,6 @@ Then in another Terminal tab, hit it exactly like you would the real Pico:
 ```
 curl http://localhost:8085/status
 curl "http://localhost:8085/start?times=2"
-curl "http://localhost:8085/start?times=2&verbose=1"
 curl http://localhost:8085/stop
 curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
 ```

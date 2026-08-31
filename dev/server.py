@@ -1,7 +1,7 @@
 """A local stand-in for the Pico's HTTP server, so you can test scripts on
 your Mac without the physical hardware. Same routes, same JSON shapes, same
-script format as code.py -- it just prints what it would press instead of
-actually pressing a key.
+script format as code.py -- it doesn't press real keys, it just waits the
+same amount of time a real press would take.
 
 Run it with:
     python3 dev/server.py
@@ -9,7 +9,6 @@ Run it with:
 Then hit it exactly like you would the real Pico, e.g.:
     curl http://localhost:8085/status
     curl "http://localhost:8085/start?times=2"
-    curl "http://localhost:8085/start?times=2&verbose=1"
     curl http://localhost:8085/stop
     curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
 """
@@ -93,10 +92,7 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
-            verbose_param = params.get("verbose", [None])[0]
-            verbose = verbose_param in ("1", "true", "True")
-
-            runner.start(times, verbose)
+            runner.start(times)
             self._send_text("ok")
         elif parsed.path == "/stop":
             runner.stop()

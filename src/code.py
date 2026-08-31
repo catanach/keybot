@@ -68,10 +68,7 @@ try:
                 status=(400, "Bad Request"),
             )
 
-        verbose_param = request.query_params.get("verbose")
-        verbose = verbose_param in ("1", "true", "True")
-
-        runner.start(times, verbose)
+        runner.start(times)
         return Response(request, "ok")
 
     @server.route("/stop")

@@ -3,10 +3,11 @@
 Both code.py (running on the Pico) and dev/server.py (running on your Mac)
 import this file and use it the same way. The only thing that differs
 between the two is how a single key press actually happens: on the Pico it
-presses a real key, and on your Mac it just prints what it would have
-pressed. That's why key presses are passed in as a function (press_fn)
-instead of being hardcoded here, and the same goes for waiting (sleep_fn) -
-the Pico needs to poll its web server while it waits, your Mac doesn't.
+presses a real key, and on your Mac it does nothing but wait the same
+amount of time. That's why key presses are passed in as a function
+(press_fn) instead of being hardcoded here, and the same goes for waiting
+(sleep_fn) - the Pico needs to poll its web server while it waits, your Mac
+doesn't.
 """
 
 DEFAULT_SCRIPT = [
@@ -32,11 +33,9 @@ class ScriptRunner:
         self.loop_count = 0
         self.current_step = 0
         self.target_loops = None  # None means "loop forever until stopped"
-        self.verbose = False  # when True, prints each step as it runs
 
-    def start(self, times=None, verbose=False):
+    def start(self, times=None):
         self.target_loops = times
-        self.verbose = verbose
         self.loop_count = 0
         self.current_step = 0
         self.running = True
@@ -48,13 +47,35 @@ class ScriptRunner:
     def set_script(self, new_script):
         self.script = new_script
 
+    def _step_duration(self, step):
+        if step[0] == "press":
+            return step[2]
+        if step[0] == "wait":
+            return step[1]
+        return 0
+
+    def _loop_duration(self):
+        return sum(self._step_duration(step) for step in self.script)
+
+    def _estimated_seconds_remaining(self):
+        # Only meaningful once running with a target loop count. An
+        # indefinite run (no "times" given) has no estimate.
+        if not self.running or self.target_loops is None:
+            return None
+        remaining_in_this_pass = sum(
+            self._step_duration(step) for step in self.script[self.current_step :]
+        )
+        remaining_full_passes = max(self.target_loops - self.loop_count - 1, 0)
+        return remaining_in_this_pass + remaining_full_passes * self._loop_duration()
+
     def status(self):
         return {
             "running": self.running,
             "loop_count": self.loop_count,
+            "target_loops": self.target_loops,
             "current_step": self.current_step,
             "total_steps": len(self.script),
-            "target_loops": self.target_loops,
+            "estimated_seconds_remaining": self._estimated_seconds_remaining(),
         }
 
     def run_one_pass(self):
@@ -62,23 +83,15 @@ class ScriptRunner:
 
         Call this repeatedly from your main loop whenever self.running is
         True. It updates loop_count, current_step, and running/stop_requested
-        as it goes, and stops itself once target_loops is reached. When
-        self.verbose is True, it prints each step as it happens.
+        as it goes, and stops itself once target_loops is reached.
         """
-        if self.verbose:
-            print("--- starting loop {} ---".format(self.loop_count + 1))
-
         for i, step in enumerate(self.script):
             if self.stop_requested:
                 break
             self.current_step = i
             if step[0] == "press":
-                if self.verbose:
-                    print("step {}: press {} (hold {}s)".format(i, step[1], step[2]))
                 self.press_fn(step[1], step[2])
             elif step[0] == "wait":
-                if self.verbose:
-                    print("step {}: wait {}s".format(i, step[1]))
                 self.sleep_fn(step[1])
                 if self.stop_requested:
                     break

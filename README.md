@@ -56,10 +56,10 @@ python3 dev/server.py
 Then in another Terminal tab, hit it exactly like you would the real Pico:
 
 ```
-curl http://localhost:5000/status
-curl "http://localhost:5000/start?times=2"
-curl http://localhost:5000/stop
-curl -X POST http://localhost:5000/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
+curl http://localhost:8085/status
+curl "http://localhost:8085/start?times=2"
+curl http://localhost:8085/stop
+curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
 ```
 
 It keeps its own `dev/script.json`, separate from the one on the Pico, so testing locally never touches the board's saved script.

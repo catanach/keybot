@@ -7,10 +7,10 @@ Run it with:
     python3 dev/server.py
 
 Then hit it exactly like you would the real Pico, e.g.:
-    curl http://localhost:5000/status
-    curl http://localhost:5000/start?times=2
-    curl http://localhost:5000/stop
-    curl -X POST http://localhost:5000/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
+    curl http://localhost:8085/status
+    curl http://localhost:8085/start?times=2
+    curl http://localhost:8085/stop
+    curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
 """
 
 import json
@@ -112,8 +112,8 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     threading.Thread(target=background_loop, daemon=True).start()
-    server = HTTPServer(("0.0.0.0", 5000), Handler)
-    print("Dev server running at http://localhost:5000")
+    server = HTTPServer(("0.0.0.0", 8085), Handler)
+    print("Dev server running at http://localhost:8085")
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

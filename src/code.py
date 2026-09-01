@@ -3,7 +3,6 @@ import time
 import json
 import wifi
 import socketpool
-import supervisor
 import usb_hid
 from adafruit_hid.keyboard import Keyboard
 from adafruit_hid.keycode import Keycode
@@ -26,8 +25,6 @@ try:
         SCRIPT = json.load(f)
 except OSError:
     SCRIPT = DEFAULT_SCRIPT
-
-reload_requested = False
 
 
 def make_sleep_fn(server, runner):
@@ -78,17 +75,23 @@ try:
 
     @server.route("/update", methods=["POST"])
     def update_handler(request):
-        global reload_requested
         try:
             new_script = request.json()
         except Exception as e:
             return Response(
                 request, "error: invalid JSON body ({})".format(e), status=(400, "Bad Request")
             )
-        with open("/script.json", "w") as f:
-            json.dump(new_script, f)
-        reload_requested = True
-        return Response(request, "ok, restarting")
+        # Swap the script in place. No restart, so this can't race a
+        # follow-up /start call the way reloading the whole board used to.
+        runner.set_script(new_script)
+        try:
+            with open("/script.json", "w") as f:
+                json.dump(new_script, f)
+        except OSError:
+            # Not fatal: the new script is already live in memory, it just
+            # won't be there anymore after the next power cycle.
+            pass
+        return Response(request, "ok")
 
     @server.route("/status")
     def status_handler(request):
@@ -101,14 +104,16 @@ try:
     while True:
         server.poll()
 
-        if reload_requested:
-            time.sleep(0.5)
-            supervisor.reload()
-
         if runner.running:
             runner.run_one_pass()
         else:
             time.sleep(0.1)
 
-except Exception:
-    pass
+except Exception as e:
+    # Something we didn't handle killed the server. Leave a one-line note
+    # behind so this isn't a silent, unexplained death next time.
+    try:
+        with open("/error_log.txt", "w") as f:
+            f.write("keybot crashed: {}: {}\n".format(type(e).__name__, e))
+    except OSError:
+        pass

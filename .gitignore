@@ -4,3 +4,5 @@ src/settings.toml
 __pycache__/
 lib/*.uf2
 dev/script.json
+webapp/data/scripts/*.json
+webapp/data/settings.json

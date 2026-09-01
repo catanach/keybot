@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>keybot</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <h1>keybot</h1>
+      <nav class="tabs">
+        <span class="tab active">Scripts</span>
+      </nav>
+    </header>
+
+    <main class="main" id="main">
+      <!-- rendered by app.js -->
+    </main>
+
+    <button id="drawer-toggle" class="drawer-toggle" title="Show run panel">▶</button>
+
+    <aside id="drawer" class="drawer">
+      <div class="drawer-header">
+        <h2>Run</h2>
+        <button id="drawer-close" class="icon-btn" title="Collapse">✕</button>
+      </div>
+
+      <div class="drawer-section">
+        <label class="field-label">Script</label>
+        <select id="run-script-select"></select>
+
+        <label class="field-label">Times (blank = forever)</label>
+        <input id="run-times" type="number" min="1" placeholder="forever">
+
+        <div class="button-row">
+          <button id="run-start-btn" class="btn primary">Start</button>
+          <button id="run-stop-btn" class="btn danger">Stop</button>
+        </div>
+        <div id="run-error" class="error-text"></div>
+      </div>
+
+      <div class="drawer-section">
+        <h3>Status</h3>
+        <div id="status-box" class="status-box">
+          <div class="status-row"><span>Running</span><span id="st-running">-</span></div>
+          <div class="status-row"><span>Loop</span><span id="st-loop">-</span></div>
+          <div class="status-row"><span>Step</span><span id="st-step">-</span></div>
+          <div class="status-row"><span>Time left</span><span id="st-eta">-</span></div>
+        </div>
+      </div>
+
+      <div class="drawer-section">
+        <details>
+          <summary>Device settings</summary>
+          <label class="field-label">Device URL</label>
+          <input id="device-url" type="text" placeholder="http://host.docker.internal:8085">
+          <div class="button-row">
+            <button id="device-url-save" class="btn small">Save</button>
+          </div>
+          <p class="hint">Point this at the local dev server (default) or your Pico's address, e.g. http://192.168.10.22:5000</p>
+        </details>
+      </div>
+    </aside>
+  </div>
+
+  <template id="tpl-step-press">
+    <div class="step" data-kind="press">
+      <select class="step-kind">
+        <option value="press" selected>Press</option>
+        <option value="wait">Wait</option>
+        <option value="run">Run script</option>
+      </select>
+      <input class="step-key" type="text" placeholder="Keycode, e.g. ENTER">
+      <input class="step-hold" type="number" step="0.1" min="0" placeholder="hold (s)">
+      <button class="icon-btn step-up" title="Move up">↑</button>
+      <button class="icon-btn step-down" title="Move down">↓</button>
+      <button class="icon-btn step-remove" title="Remove">✕</button>
+    </div>
+  </template>
+
+  <template id="tpl-step-wait">
+    <div class="step" data-kind="wait">
+      <select class="step-kind">
+        <option value="press">Press</option>
+        <option value="wait" selected>Wait</option>
+        <option value="run">Run script</option>
+      </select>
+      <input class="step-seconds" type="number" step="0.1" min="0" placeholder="seconds">
+      <button class="icon-btn step-up" title="Move up">↑</button>
+      <button class="icon-btn step-down" title="Move down">↓</button>
+      <button class="icon-btn step-remove" title="Remove">✕</button>
+    </div>
+  </template>
+
+  <template id="tpl-step-run">
+    <div class="step" data-kind="run">
+      <select class="step-kind">
+        <option value="press">Press</option>
+        <option value="wait">Wait</option>
+        <option value="run" selected>Run script</option>
+      </select>
+      <select class="step-ref"></select>
+      <input class="step-times" type="number" min="1" placeholder="times">
+      <button class="icon-btn step-up" title="Move up">↑</button>
+      <button class="icon-btn step-down" title="Move down">↓</button>
+      <button class="icon-btn step-remove" title="Remove">✕</button>
+    </div>
+  </template>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

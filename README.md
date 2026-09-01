@@ -68,3 +68,35 @@ curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait",
 ```
 
 It keeps its own `dev/script.json`, separate from the one on the Pico, so testing locally never touches the board's saved script.
+
+## Management webapp
+
+`webapp/` is a small web app for managing scripts without hand-writing JSON or curl commands. It runs entirely in Docker, so nothing needs to be installed on your Mac except Docker itself.
+
+### One-time setup
+
+Install [Docker Desktop](https://www.docker.com/products/docker-desktop/) if you don't already have it.
+
+### Running it
+
+```
+cd webapp
+docker compose up
+```
+
+Then open [http://localhost:8000](http://localhost:8000) in your browser. Stop it with Ctrl+C, or `docker compose down` from the same folder.
+
+Your scripts are saved as JSON files under `webapp/data/scripts/` (created automatically, gitignored), one file per script, so they survive restarting the container and you can peek at them directly if you're curious.
+
+### What it does
+
+- Create, edit, copy, and delete scripts, each with a name and an optional description.
+- A script's steps are either `Press` (a keycode and hold time), `Wait` (seconds), or `Run script` (another script and how many times to repeat it inline).
+- The "Run script" step type is how you compose scripts: a script that runs Script A once, then Script B 10 times, then Script C once is just three "Run script" steps. When you start that composed script, the webapp resolves all the references into one flat sequence before sending it to the device, so the Pico itself doesn't need to know anything about the composition. That flattened sequence is capped at 2,000 steps and checked for circular references (A running B running A), so a mistake there is caught immediately with a clear error instead of hanging the device.
+- A persistent panel on the right lets you pick a script, optionally give it a repeat count, and hit Start or Stop. While something is running it shows the loop count, current step, and an estimated time remaining, refreshed automatically.
+
+### Pointing it at the Pico or the dev server
+
+The panel's "Device settings" section holds one setting: the device URL. It defaults to `http://host.docker.internal:8085`, which reaches `dev/server.py` if it's running directly on your Mac (this special hostname is how a Docker container reaches something on its own host machine — a plain `localhost` won't work here, since that would mean "inside the container").
+
+To point it at the real Pico instead, change this to the Pico's own address, e.g. `http://192.168.10.22:5000`.

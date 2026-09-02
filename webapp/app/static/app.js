@@ -770,6 +770,9 @@ document.getElementById("run-start-btn").onclick = async () => {
   const btn = document.getElementById("run-start-btn");
   const stopBtn = document.getElementById("run-stop-btn");
   errBox.textContent = "";
+  // Clear the previous run's failure straight away rather than leaving it
+  // on screen until the next poll comes back.
+  showDeviceFault(null);
   const scriptId = document.getElementById("run-script-select").value;
   const timesVal = document.getElementById("run-times").value;
   const times = timesVal ? parseInt(timesVal, 10) : null;

@@ -106,6 +106,12 @@ try:
                 status=(400, "Bad Request"),
             )
 
+        # A fault is a report about the previous run. Clear it here so the
+        # webapp does not keep showing an old failure over a healthy run;
+        # last_fault otherwise survives until the board is rebooted.
+        global last_fault
+        last_fault = None
+
         runner.start(times)
         return Response(request, "ok")
 

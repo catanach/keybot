@@ -163,6 +163,11 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
+            # Mirrors code.py: a fault describes the previous run, so
+            # starting a new one clears it.
+            global last_fault
+            last_fault = None
+
             runner.start(times)
             self._send_text("ok")
         elif parsed.path == "/stop":

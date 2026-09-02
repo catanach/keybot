@@ -32,10 +32,20 @@ LOG="webapp/update.log"
   git fetch origin main --quiet
   git merge --ff-only origin/main --quiet
   AFTER=$(git rev-parse HEAD)
+  
+  # Check if there are local changes ahead of origin (unpushed commits)
+  LOCAL_AHEAD=$(git rev-list origin/main..HEAD --count 2>/dev/null || echo 0)
 
-  if [ "$BEFORE" != "$AFTER" ]; then
-    echo "Updated $BEFORE -> $AFTER"
-    if git diff --name-only "$BEFORE" "$AFTER" | grep -q '^webapp/'; then
+  if [ "$BEFORE" != "$AFTER" ] || [ "$LOCAL_AHEAD" -gt 0 ]; then
+    if [ "$BEFORE" != "$AFTER" ]; then
+      echo "Updated $BEFORE -> $AFTER"
+    fi
+    if [ "$LOCAL_AHEAD" -gt 0 ]; then
+      echo "Local branch is ahead of origin by $LOCAL_AHEAD commit(s)"
+    fi
+    # Check if webapp/ has any changes (either pulled or local)
+    if git diff --name-only "$BEFORE" "$AFTER" | grep -q '^webapp/' || \
+       ([ "$LOCAL_AHEAD" -gt 0 ] && git diff --name-only origin/main | grep -q '^webapp/'); then
       echo "webapp/ changed, rebuilding the container..."
       (cd webapp && docker compose up -d --build)
     else

@@ -41,6 +41,16 @@ LOG="webapp/update.log"
   # Check if there are local changes ahead of origin (unpushed commits)
   LOCAL_AHEAD=$(git rev-list origin/main..HEAD --count 2>/dev/null || echo 0)
 
+  # Work out what changed BEFORE pushing. Pushing resets the ahead-count,
+  # so deciding on a rebuild afterwards would miss local webapp changes
+  # and quietly leave the old container running.
+  CHANGED_FILES=$( { git diff --name-only "$BEFORE" "$AFTER"; \
+                     git diff --name-only origin/main HEAD; } | sort -u )
+  NEEDS_REBUILD=0
+  if echo "$CHANGED_FILES" | grep -q '^webapp/'; then
+    NEEDS_REBUILD=1
+  fi
+
   # Push any local commits made by the agent team. The LaunchAgent runs
   # natively on the Mac, so it has the network access and credentials that
   # the sandboxed agent shells do not. This is what makes autonomous
@@ -56,16 +66,14 @@ LOG="webapp/update.log"
     fi
   fi
 
-  if [ "$BEFORE" != "$AFTER" ] || [ "$LOCAL_AHEAD" -gt 0 ]; then
+  if [ "$NEEDS_REBUILD" -eq 1 ]; then
     if [ "$BEFORE" != "$AFTER" ]; then
       echo "Updated $BEFORE -> $AFTER"
     fi
     if [ "$LOCAL_AHEAD" -gt 0 ]; then
       echo "Local branch is ahead of origin by $LOCAL_AHEAD commit(s)"
     fi
-    # Check if webapp/ has any changes (either pulled or local)
-    if git diff --name-only "$BEFORE" "$AFTER" | grep -q '^webapp/' || \
-       ([ "$LOCAL_AHEAD" -gt 0 ] && git diff --name-only origin/main | grep -q '^webapp/'); then
+    if [ "$NEEDS_REBUILD" -eq 1 ]; then
       echo "webapp/ changed, rebuilding the container with fresh image..."
       (cd webapp && docker compose down --remove-orphans 2>&1 || true)
       echo "Building image without cache to ensure app.js is current..."

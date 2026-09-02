@@ -17,16 +17,20 @@ LOG="webapp/update.log"
 {
   echo "=== $(date) ==="
 
+  # First, ensure Docker Desktop is actually running
   if ! docker info > /dev/null 2>&1; then
-    echo "Docker doesn't seem to be running, trying to start Docker Desktop..."
-    open -a Docker 2>/dev/null || true
-    sleep 20
+    echo "Docker not responding. Running Docker startup script..."
+    bash webapp/start-docker-and-app.sh 2>&1 | tail -20
+    
+    # Final check
     if ! docker info > /dev/null 2>&1; then
-      echo "Still not up. Skipping this check, will try again next run."
-      echo ""
-      exit 0
+      echo "ERROR: Docker startup failed. Container will not be available."
+      echo "Manual action required: Please ensure Docker Desktop is running on the Mac."
+      exit 1
     fi
   fi
+  
+  echo "Docker is running, proceeding with update check..."
 
   BEFORE=$(git rev-parse HEAD)
   git fetch origin main --quiet
@@ -36,7 +40,6 @@ LOG="webapp/update.log"
   # Check if there are local changes ahead of origin (unpushed commits)
   LOCAL_AHEAD=$(git rev-list origin/main..HEAD --count 2>/dev/null || echo 0)
 
-  REBUILT=0
   if [ "$BEFORE" != "$AFTER" ] || [ "$LOCAL_AHEAD" -gt 0 ]; then
     if [ "$BEFORE" != "$AFTER" ]; then
       echo "Updated $BEFORE -> $AFTER"
@@ -50,27 +53,55 @@ LOG="webapp/update.log"
       echo "webapp/ changed, rebuilding the container with fresh image..."
       (cd webapp && docker compose down --remove-orphans 2>&1 || true)
       echo "Building image without cache to ensure app.js is current..."
-      (cd webapp && docker compose build --no-cache 2>&1 | tail -20)
+      (cd webapp && docker compose build --no-cache 2>&1 | tail -15)
       echo "Starting container..."
       (cd webapp && docker compose up -d 2>&1 | tail -5)
-      REBUILT=1
     else
       echo "No webapp/ changes in this update, skipping rebuild."
     fi
   else
-    echo "Already up to date."
+    echo "Already up to date, ensuring container is running..."
+    cd webapp
+    # Make sure container is actually running
+    if ! docker compose ps -q | grep -q .; then
+      echo "Container not running, starting it..."
+      docker compose up -d 2>&1 | tail -3
+    fi
   fi
 
+  cd webapp
   echo "Container status:"
-  (cd webapp && docker compose ps 2>&1)
+  docker compose ps 2>&1
   
-  # Wait a moment for the app to start
+  # Wait for app to start
   sleep 3
   
-  # Run comprehensive verification
+  # Real verification: check what's actually being served
   echo ""
-  echo "Running deployment verification..."
-  bash webapp/verify-deployment.sh 2>&1 | head -100
+  echo "=== DEPLOYMENT VERIFICATION ==="
+  
+  HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/static/app.js 2>/dev/null || echo "000")
+  
+  if [ "$HTTP_STATUS" = "200" ]; then
+    ACTUAL_SIZE=$(curl -s http://localhost:8000/static/app.js | wc -c)
+    echo "✓ App is responding (HTTP 200)"
+    echo "  app.js actual size: $ACTUAL_SIZE bytes"
+    
+    if [ $ACTUAL_SIZE -gt 30000 ]; then
+      echo "  ✓ Size correct (>30KB) - NEW CODE is being served"
+    else
+      echo "  ✗ Size too small (<30KB) - OLD CODE is being served"
+    fi
+  else
+    echo "✗ App not responding (HTTP $HTTP_STATUS)"
+    echo "  Restarting container..."
+    docker compose restart
+    sleep 5
+    HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:8000/static/app.js 2>/dev/null || echo "000")
+    echo "  Status after restart: HTTP $HTTP_STATUS"
+  fi
+  
+  echo ""
   
 } >> "$LOG" 2>&1
 

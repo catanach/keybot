@@ -40,6 +40,21 @@ LOG="webapp/update.log"
   # Check if there are local changes ahead of origin (unpushed commits)
   LOCAL_AHEAD=$(git rev-list origin/main..HEAD --count 2>/dev/null || echo 0)
 
+  # Push any local commits made by the agent team. The LaunchAgent runs
+  # natively on the Mac, so it has the network access and credentials that
+  # the sandboxed agent shells do not. This is what makes autonomous
+  # deploys possible without asking the director to run git commands.
+  if [ "$LOCAL_AHEAD" -gt 0 ]; then
+    echo "Pushing $LOCAL_AHEAD local commit(s) to origin/main..."
+    if git push origin main 2>&1; then
+      echo "Push succeeded."
+      git fetch origin main --quiet
+      LOCAL_AHEAD=$(git rev-list origin/main..HEAD --count 2>/dev/null || echo 0)
+    else
+      echo "Push failed. Leaving commits local."
+    fi
+  fi
+
   if [ "$BEFORE" != "$AFTER" ] || [ "$LOCAL_AHEAD" -gt 0 ]; then
     if [ "$BEFORE" != "$AFTER" ]; then
       echo "Updated $BEFORE -> $AFTER"

@@ -13,3 +13,6 @@ keybot-push.bundle
 *.bak
 *.backup
 webapp/*.log
+
+webapp/.gh-queue/
+webapp/gh-bridge.log

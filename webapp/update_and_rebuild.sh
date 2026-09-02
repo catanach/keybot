@@ -33,6 +33,11 @@ LOG="webapp/update.log"
   
   echo "Docker is running, proceeding with update check..."
 
+  # Post anything the agents have queued for GitHub. Runs here because the
+  # LaunchAgent is the only part of this system with both network access
+  # and signed-in credentials.
+  bash webapp/gh-bridge.sh || echo "gh-bridge failed, continuing"
+
   BEFORE=$(git rev-parse HEAD)
   git fetch origin main --quiet
   git merge --ff-only origin/main --quiet

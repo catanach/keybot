@@ -70,10 +70,64 @@ body {
   border-bottom: 1px solid var(--border);
 }
 
+.sidebar-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
 .sidebar-header h2 {
   margin: 0;
   font-size: 16px;
   color: var(--text);
+  flex: 1;
+}
+
+/* Device connection indicator */
+.device-indicator {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  background: var(--panel-secondary);
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.device-indicator-dot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+  animation: none;
+}
+
+.device-indicator-dot.connected {
+  background: var(--success);
+  animation: pulse-connected 2s ease-in-out infinite;
+}
+
+.device-indicator-dot.unreachable {
+  background: var(--danger);
+}
+
+.device-indicator-dot.connecting {
+  background: var(--accent);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes pulse-connected {
+  0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.3); }
+  50% { opacity: 0.8; box-shadow: 0 0 0 2px rgba(74, 222, 128, 0.2); }
 }
 
 .sidebar-section {
@@ -109,6 +163,41 @@ body {
 
 .sidebar-section-content.hidden {
   display: none;
+}
+
+/* Recent scripts */
+
+.recent-scripts {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.recent-scripts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.recent-script-btn {
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--panel-secondary);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.2s, border-color 0.2s;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-script-btn:hover {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: white;
 }
 
 /* Status display */

@@ -1,0 +1,31 @@
+#!/bin/bash
+# Health check for keybot webapp
+# Restarts Docker if the app is not responding
+
+WEBAPP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/webapp" && pwd)"
+PORT=5000
+HEALTH_URL="http://localhost:$PORT/api/device/status"
+LOG_FILE="/tmp/keybot-health.log"
+
+# Check if app is responding
+if ! curl -s --max-time 5 "$HEALTH_URL" > /dev/null 2>&1; then
+  echo "[$(date)] App not responding at $HEALTH_URL - restarting..." >> "$LOG_FILE"
+
+  # Restart Docker
+  cd "$WEBAPP_DIR"
+  docker compose down 2>/dev/null || true
+  sleep 2
+  docker compose up -d
+
+  # Wait for app to come back
+  sleep 5
+
+  # Log result
+  if curl -s --max-time 5 "$HEALTH_URL" > /dev/null 2>&1; then
+    echo "[$(date)] ✅ App recovered after restart" >> "$LOG_FILE"
+  else
+    echo "[$(date)] ❌ App still not responding after restart" >> "$LOG_FILE"
+  fi
+else
+  echo "[$(date)] ✅ App is healthy" >> "$LOG_FILE"
+fi

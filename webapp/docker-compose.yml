@@ -7,8 +7,10 @@ services:
         BUILD_TIMESTAMP: "$(date +%s)"
     ports:
       - "8000:8000"
+      - "5000:8000"
     volumes:
       - ./app:/app/app
       - ./data:/data
       - ../src:/firmware_src:ro
+      - ./app:/app/app
     restart: unless-stopped

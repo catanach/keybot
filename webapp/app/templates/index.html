@@ -11,7 +11,13 @@
     <!-- Left Sidebar -->
     <aside id="sidebar" class="sidebar">
       <div class="sidebar-header">
-        <h2>keybot</h2>
+        <div class="sidebar-header-top">
+          <h2>keybot</h2>
+          <div class="device-indicator" id="device-indicator" title="Device connection status">
+            <span class="device-indicator-dot"></span>
+            <span class="device-indicator-label" id="device-indicator-label">connecting</span>
+          </div>
+        </div>
       </div>
 
       <!-- Device Status Section -->
@@ -47,7 +53,12 @@
           Run Script
         </div>
         <div class="sidebar-section-content">
+          <label class="field-label" style="margin: 0 0 4px;">Script</label>
           <select id="run-script-select" class="sidebar-input"></select>
+          <div id="recent-scripts-container" class="recent-scripts" style="display: none;">
+            <label class="field-label" style="margin: 8px 0 4px;">Recent</label>
+            <div id="recent-scripts-list" class="recent-scripts-list"></div>
+          </div>
           <label class="field-label" style="margin: 8px 0 4px;">Times (∞ = forever)</label>
           <input id="run-times" type="number" min="1" class="sidebar-input" placeholder="forever">
           <div class="button-row">

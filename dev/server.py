@@ -31,18 +31,61 @@ from urllib.parse import urlparse, parse_qs
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from script_runner import ScriptRunner, DEFAULT_SCRIPT  # noqa: E402
 
-SCRIPT_FILE = os.path.join(os.path.dirname(__file__), "script.json")
+# Where this dev server keeps the script pushed to it. Overridable so a
+# test run (dev/repro_lockup.py) does not overwrite your working script.
+SCRIPT_FILE = os.environ.get(
+    "KEYBOT_DEV_SCRIPT", os.path.join(os.path.dirname(__file__), "script.json")
+)
+
+# The key names the Pico will accept, taken from the adafruit_hid Keycode
+# library in lib/. The dev server checks against this list so that a key
+# name the real board would reject fails here too, instead of only showing
+# up once the script is running on the hardware.
+KEYCODE_NAMES = frozenset(
+    list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    + [
+        "ZERO", "ONE", "TWO", "THREE", "FOUR",
+        "FIVE", "SIX", "SEVEN", "EIGHT", "NINE",
+        "ENTER", "RETURN", "ESCAPE", "BACKSPACE", "TAB", "SPACE", "SPACEBAR",
+        "MINUS", "EQUALS", "LEFT_BRACKET", "RIGHT_BRACKET", "BACKSLASH",
+        "POUND", "SEMICOLON", "QUOTE", "GRAVE_ACCENT", "COMMA", "PERIOD",
+        "FORWARD_SLASH", "CAPS_LOCK",
+        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11",
+        "F12", "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20",
+        "F21", "F22", "F23", "F24",
+        "PRINT_SCREEN", "SCROLL_LOCK", "PAUSE", "INSERT", "HOME", "PAGE_UP",
+        "DELETE", "END", "PAGE_DOWN",
+        "RIGHT_ARROW", "LEFT_ARROW", "DOWN_ARROW", "UP_ARROW",
+        "KEYPAD_NUMLOCK", "KEYPAD_FORWARD_SLASH", "KEYPAD_ASTERISK",
+        "KEYPAD_MINUS", "KEYPAD_PLUS", "KEYPAD_ENTER", "KEYPAD_ZERO",
+        "KEYPAD_ONE", "KEYPAD_TWO", "KEYPAD_THREE", "KEYPAD_FOUR",
+        "KEYPAD_FIVE", "KEYPAD_SIX", "KEYPAD_SEVEN", "KEYPAD_EIGHT",
+        "KEYPAD_NINE", "KEYPAD_PERIOD", "KEYPAD_BACKSLASH", "KEYPAD_EQUALS",
+        "APPLICATION", "POWER",
+        "LEFT_CONTROL", "CONTROL", "LEFT_SHIFT", "SHIFT", "LEFT_ALT", "ALT",
+        "OPTION", "LEFT_GUI", "GUI", "WINDOWS", "COMMAND",
+        "RIGHT_CONTROL", "RIGHT_SHIFT", "RIGHT_ALT", "RIGHT_GUI",
+    ]
+)
 
 DEPLOYABLE_FILES = ("code.py", "script_runner.py")
 
 try:
     with open(SCRIPT_FILE, "r") as f:
         SCRIPT = json.load(f)
-except OSError:
+    if not isinstance(SCRIPT, list):
+        SCRIPT = DEFAULT_SCRIPT
+except (OSError, ValueError):
+    # Missing or unreadable saved script: fall back to the built-in one
+    # rather than failing to start. Same as code.py.
     SCRIPT = DEFAULT_SCRIPT
 
 
 def press_fn(keycode_name, hold):
+    # No real key is pressed here, but an unknown key name has to fail the
+    # same way it does on the Pico, where it's an error from Keycode.
+    if keycode_name not in KEYCODE_NAMES:
+        raise ValueError("there is no key called '{}'".format(keycode_name))
     time.sleep(hold)
 
 
@@ -54,14 +97,33 @@ def sleep_fn(duration):
         time.sleep(0.05)
 
 
-runner = ScriptRunner(SCRIPT, press_fn, sleep_fn)
+def release_fn():
+    # Nothing is really held down here; the Pico releases every key at
+    # this point, so the shape of a run matches.
+    pass
+
+
+runner = ScriptRunner(SCRIPT, press_fn, sleep_fn, release_fn)
+
+# Matches code.py: the most recent problem outside of a script run,
+# reported by /status.
+last_fault = None
 
 
 def background_loop():
+    global last_fault
     while True:
-        if runner.running:
-            runner.run_one_pass()
-        else:
+        try:
+            if runner.running:
+                runner.run_one_pass()
+            else:
+                time.sleep(0.1)
+        except Exception as e:
+            # Same guarantee code.py makes on the Pico: nothing ends this
+            # loop, or the device would go quiet until it was restarted.
+            last_fault = "while running: {}: {}".format(type(e).__name__, e)
+            runner.running = False
+            runner.stop_requested = False
             time.sleep(0.1)
 
 
@@ -110,7 +172,9 @@ class Handler(BaseHTTPRequestHandler):
                 runner.stop()
             self._send_text("ok")
         elif parsed.path == "/status":
-            self._send_json(runner.status())
+            state = runner.status()
+            state["last_fault"] = last_fault
+            self._send_json(state)
         else:
             self._send_text("not found", code=404)
 
@@ -124,7 +188,11 @@ class Handler(BaseHTTPRequestHandler):
             except json.JSONDecodeError as e:
                 self._send_text("error: invalid JSON body ({})".format(e), code=400)
                 return
-            runner.set_script(new_script)
+            try:
+                runner.set_script(new_script)
+            except ValueError as e:
+                self._send_text("error: {}".format(e), code=400)
+                return
             with open(SCRIPT_FILE, "w") as f:
                 json.dump(new_script, f)
             self._send_text("ok")
@@ -160,9 +228,13 @@ class Handler(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
+    # Port is 8085 to match the webapp's default device URL. Override it
+    # with KEYBOT_DEV_PORT when you want a second copy running alongside
+    # (the lockup repro in dev/repro_lockup.py does this).
+    port = int(os.environ.get("KEYBOT_DEV_PORT", "8085"))
     threading.Thread(target=background_loop, daemon=True).start()
-    server = HTTPServer(("0.0.0.0", 8085), Handler)
-    print("Dev server running at http://localhost:8085")
+    server = HTTPServer(("0.0.0.0", port), Handler)
+    print("Dev server running at http://localhost:{}".format(port))
     print("Press Ctrl+C to stop.")
     try:
         server.serve_forever()

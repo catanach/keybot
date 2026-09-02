@@ -48,6 +48,8 @@ Any time you change something in `src/` or `lib/`, plug the Pico into your Mac a
   - `target_loops` — how many were requested (`null` if started without a `times` value, meaning it loops forever until stopped)
   - `current_step` / `total_steps` — which step it's on within the current pass
   - `estimated_seconds_remaining` — a rough estimate of how much longer it'll take, based on the script's own wait times (`null` when `target_loops` is `null`, since there's no fixed end point to estimate toward)
+  - `last_error` — why the last run stopped early, in plain language (e.g. `stopped at step 2 of 5: there is no key called 'UP'`), or `null` if it finished normally. A step that fails stops that run, releases every key, and gets reported here; it never takes the device down with it.
+  - `last_fault` — the last problem outside of a script run (a failed write, a hiccup in the web server), or `null`. Also written to `error_log.txt` on the board so it survives a restart.
 - `http://<pico-ip>:5000/update` (POST, with a JSON body like `[["press", "ENTER", 0.1], ["wait", 5]]`) saves a new script and restarts the board to start using it immediately. Returns `ok, restarting`, or an error message if the JSON body is invalid.
 
 ## Developing without the Pico
@@ -67,7 +69,18 @@ curl http://localhost:8085/stop
 curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
 ```
 
-It keeps its own `dev/script.json`, separate from the one on the Pico, so testing locally never touches the board's saved script.
+It keeps its own `dev/script.json`, separate from the one on the Pico, so testing locally never touches the board's saved script. It also refuses key names the real board would refuse, so a typo like `UP` (the real name is `UP_ARROW`) shows up on your Mac instead of on the hardware.
+
+### Tests
+
+Two things to run, neither of which needs the Pico:
+
+```
+python3 -m unittest discover -s dev   # the script-running logic
+python3 dev/repro_lockup.py           # the device recovers from bad scripts
+```
+
+`dev/repro_lockup.py` starts its own copy of the dev server on a spare port, feeds it the kinds of broken script the webapp can produce, and checks that the device is still answering and still usable afterwards. Every case has to print PASS.
 
 ## Management webapp
 

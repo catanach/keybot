@@ -47,9 +47,12 @@ LOG="webapp/update.log"
     # Check if webapp/ has any changes (either pulled or local)
     if git diff --name-only "$BEFORE" "$AFTER" | grep -q '^webapp/' || \
        ([ "$LOCAL_AHEAD" -gt 0 ] && git diff --name-only origin/main | grep -q '^webapp/'); then
-      echo "webapp/ changed, rebuilding the container..."
+      echo "webapp/ changed, rebuilding the container with fresh image..."
       (cd webapp && docker compose down --remove-orphans 2>&1 || true)
-      (cd webapp && docker compose up -d --build)
+      echo "Building image without cache to ensure app.js is current..."
+      (cd webapp && docker compose build --no-cache 2>&1 | tail -20)
+      echo "Starting container..."
+      (cd webapp && docker compose up -d 2>&1 | tail -5)
       REBUILT=1
     else
       echo "No webapp/ changes in this update, skipping rebuild."
@@ -76,6 +79,10 @@ LOG="webapp/update.log"
       echo "  App responding correctly (app.js size: $APP_JS_SIZE bytes)"
       if [ "$APP_JS_SIZE" -lt 20000 ]; then
         echo "  WARNING: app.js is smaller than expected (should be ~32KB)"
+        echo "  Rebuilding with --no-cache to get fresh image..."
+        docker compose down --remove-orphans 2>&1 || true
+        docker compose build --no-cache 2>&1 | tail -10
+        docker compose up -d 2>&1 | tail -3
       fi
     elif [ "$HTTP_STATUS" = "000" ]; then
       echo "  ERROR: Cannot reach localhost:8000, container may be crashed"

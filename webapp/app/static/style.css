@@ -13,9 +13,27 @@
   --danger-hover: #ff5252;
   --success: #4ade80;
   --radius: 8px;
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 * { box-sizing: border-box; }
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideIn {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes scaleIn {
+  from { transform: scale(0.95); opacity: 0; }
+  to { transform: scale(1); opacity: 1; }
+}
 
 html, body {
   height: 100%;
@@ -99,14 +117,15 @@ body {
   background: var(--panel-secondary);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  padding: 10px;
-  font-size: 13px;
+  padding: 12px;
+  font-size: 14px;
 }
 
 .status-row {
   display: flex;
   justify-content: space-between;
-  padding: 4px 0;
+  align-items: center;
+  padding: 8px 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -116,11 +135,24 @@ body {
 
 .status-row span:first-child {
   color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .status-row span:last-child {
-  font-weight: 600;
+  font-weight: 700;
   color: var(--text);
+  font-size: 16px;
+}
+
+.status-row span:last-child.status-running {
+  color: var(--danger);
+  animation: pulse 2s infinite;
+}
+
+.status-row span:last-child.status-idle {
+  color: var(--success);
 }
 
 /* Recording section */
@@ -196,14 +228,15 @@ body {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 8px;
+  padding: 10px;
   margin-bottom: 10px;
-  max-height: 120px;
+  max-height: 140px;
   overflow-y: auto;
-  font-size: 11px;
+  font-size: 12px;
   font-family: "Monaco", monospace;
-  color: var(--text-secondary);
-  line-height: 1.4;
+  color: var(--text);
+  line-height: 1.6;
+  letter-spacing: 0.01em;
 }
 
 /* Sidebar buttons */
@@ -279,9 +312,82 @@ body {
 
 .list-header {
   display: flex;
+  flex-direction: column;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.list-header-top {
+  display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  gap: 12px;
+}
+
+.script-search {
+  position: relative;
+  flex: 1;
+  max-width: 300px;
+}
+
+.script-search input {
+  width: 100%;
+  padding: 8px 12px 8px 32px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  background: var(--panel-secondary);
+  color: var(--text);
+  border-radius: 6px;
+}
+
+.script-search input::placeholder {
+  color: var(--muted);
+}
+
+.script-search input:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px rgba(91, 126, 255, 0.2);
+}
+
+.script-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.script-filters {
+  display: flex;
+  gap: 6px;
+}
+
+.script-filter-btn {
+  padding: 6px 12px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+  background: var(--panel-secondary);
+  color: var(--muted);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.script-filter-btn.active {
+  background: var(--accent);
+  color: white;
+  border-color: var(--accent);
+}
+
+.script-filter-btn:hover {
+  border-color: var(--accent);
+}
+
+.script-count {
+  font-size: 12px;
+  color: var(--muted);
 }
 
 .script-card {
@@ -294,11 +400,18 @@ body {
   justify-content: space-between;
   align-items: center;
   gap: 12px;
-  transition: background 0.2s;
+  transition: background var(--transition-base), transform var(--transition-base), box-shadow var(--transition-base);
+  animation: fadeIn var(--transition-slow);
 }
 
 .script-card:hover {
   background: var(--panel-secondary);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+.script-card-info {
+  flex: 1;
 }
 
 .script-card-info h3 {
@@ -311,6 +424,25 @@ body {
   margin: 0;
   font-size: 13px;
   color: var(--muted);
+}
+
+.script-card-star {
+  font-size: 18px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 4px;
+  color: var(--muted);
+  transition: color 0.2s;
+  flex-shrink: 0;
+}
+
+.script-card-star:hover {
+  color: var(--accent);
+}
+
+.script-card-star.favorited {
+  color: #fbbf24;
 }
 
 .script-card-actions {
@@ -361,6 +493,7 @@ select {
   font-family: inherit;
   background: var(--panel-secondary);
   color: var(--text);
+  transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background var(--transition-fast);
 }
 
 input[type="text"]:focus,
@@ -370,6 +503,7 @@ select:focus {
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 2px rgba(91, 126, 255, 0.2);
+  background: var(--panel);
 }
 
 textarea {
@@ -407,15 +541,17 @@ textarea {
   cursor: pointer;
   background: var(--panel-secondary);
   color: var(--text);
-  transition: background 0.2s;
+  transition: background var(--transition-fast), transform var(--transition-fast), box-shadow var(--transition-fast);
 }
 
 .btn:hover {
   background: var(--border);
+  transform: translateY(-1px);
 }
 
 .btn:active {
-  opacity: 0.9;
+  transform: translateY(0);
+  opacity: 0.95;
 }
 
 .btn.primary {

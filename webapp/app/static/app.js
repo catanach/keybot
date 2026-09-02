@@ -1,5 +1,18 @@
 // keybot frontend -- plain JS, no build step.
 
+// Utility: debounce function for performance
+function debounce(func, wait) {
+  let timeout;
+  return function executedFunction(...args) {
+    const later = () => {
+      clearTimeout(timeout);
+      func(...args);
+    };
+    clearTimeout(timeout);
+    timeout = setTimeout(later, wait);
+  };
+}
+
 const api = {
   async listScripts() {
     return (await fetch("/api/scripts")).json();
@@ -69,6 +82,37 @@ async function fetchJson(url, method, body) {
 
 const main = document.getElementById("main");
 let allScripts = [];
+let lastRunScriptId = localStorage.getItem("lastRunScriptId") || null;
+let isEditingScript = false;
+let favorites = new Set(JSON.parse(localStorage.getItem("favorites") || "[]"));
+let recentScriptIds = JSON.parse(localStorage.getItem("recentScriptIds") || "[]"); // Track up to 5 recent scripts
+
+// Keyboard shortcuts setup
+document.addEventListener("keydown", (e) => {
+  // Cmd/Ctrl + R: toggle recording
+  if ((e.metaKey || e.ctrlKey) && e.key === "r") {
+    e.preventDefault();
+    const btn = document.getElementById("recording-toggle-btn");
+    btn.click();
+  }
+  // Cmd/Ctrl + Enter: run selected script
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    const btn = document.getElementById("run-start-btn");
+    btn.click();
+  }
+  // Cmd/Ctrl + S: save script or save recording
+  if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+    e.preventDefault();
+    const recordingBtn = document.getElementById("recording-save-btn");
+    const scriptBtn = document.getElementById("save-btn");
+    if (recordingBtn && recordingBtn.style.display !== "none") {
+      recordingBtn.click();
+    } else if (scriptBtn && !isEditingScript) {
+      scriptBtn.click();
+    }
+  }
+});
 
 // Sidebar collapsible sections
 function initSidebarSections() {
@@ -244,6 +288,9 @@ async function saveRecordedScript() {
 
   const name = `Recording ${new Date().toLocaleString()}`;
   try {
+    // Optimistic UI: disable button and show saving state
+    recordingSaveBtn.disabled = true;
+    recordingSaveBtn.textContent = "Saving...";
     const saved = await api.createScript({
       name,
       description: "Script recorded from keyboard input",
@@ -254,6 +301,8 @@ async function saveRecordedScript() {
     await renderList();
   } catch (e) {
     recordingError.textContent = "Couldn't save: " + e.message;
+    recordingSaveBtn.disabled = false;
+    recordingSaveBtn.textContent = "Save";
   }
 }
 
@@ -285,34 +334,57 @@ function resetRecording() {
 // Script list
 // -----
 
-async function renderList() {
-  allScripts = await api.listScripts();
-  refreshRunSelect();
+let scriptFilter = "all";
+let scriptSearch = "";
 
-  main.innerHTML = "";
+function saveFavorites() {
+  localStorage.setItem("favorites", JSON.stringify([...favorites]));
+}
 
-  const header = document.createElement("div");
-  header.className = "list-header";
-  header.innerHTML = `<h2 style="margin:0">Scripts</h2>`;
-  const newBtn = document.createElement("button");
-  newBtn.className = "btn primary";
-  newBtn.textContent = "+ New script";
-  newBtn.onclick = () => renderEditor(null);
-  header.appendChild(newBtn);
-  main.appendChild(header);
+function toggleFavorite(scriptId) {
+  if (favorites.has(scriptId)) {
+    favorites.delete(scriptId);
+  } else {
+    favorites.add(scriptId);
+  }
+  saveFavorites();
+  filterAndDisplayScripts();
+}
 
-  if (allScripts.length === 0) {
+function filterAndDisplayScripts() {
+  const filtered = allScripts.filter(s => {
+    const matchesSearch = s.name.toLowerCase().includes(scriptSearch.toLowerCase()) ||
+                          (s.description || "").toLowerCase().includes(scriptSearch.toLowerCase());
+    return matchesSearch;
+  });
+
+  // Sort: favorites first
+  filtered.sort((a, b) => {
+    const aFav = favorites.has(a.id) ? 0 : 1;
+    const bFav = favorites.has(b.id) ? 0 : 1;
+    return aFav - bFav;
+  });
+
+  // Clear and rebuild list
+  const listContainer = document.getElementById("scripts-list");
+  if (!listContainer) return;
+  listContainer.innerHTML = "";
+
+  if (filtered.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty-state";
-    empty.textContent = "No scripts yet. Create one to get started.";
-    main.appendChild(empty);
+    empty.textContent = scriptSearch ? "No scripts match your search." : "No scripts yet. Create one to get started.";
+    listContainer.appendChild(empty);
     return;
   }
 
-  for (const s of allScripts) {
+  for (const s of filtered) {
     const card = document.createElement("div");
     card.className = "script-card";
     card.innerHTML = `
+      <button class="script-card-star ${favorites.has(s.id) ? "favorited" : ""}" data-id="${s.id}" title="Add to favorites">
+        ${favorites.has(s.id) ? "⭐" : "☆"}
+      </button>
       <div class="script-card-info">
         <h3>${escapeHtml(s.name)}</h3>
         <p>${escapeHtml(s.description || "")} &middot; ${s.step_count} step${s.step_count === 1 ? "" : "s"}</p>
@@ -323,6 +395,12 @@ async function renderList() {
         <button class="btn small danger" data-act="delete">Delete</button>
       </div>
     `;
+
+    card.querySelector(".script-card-star").onclick = (e) => {
+      e.preventDefault();
+      toggleFavorite(s.id);
+    };
+
     card.querySelector('[data-act="edit"]').onclick = () => renderEditor(s.id);
     card.querySelector('[data-act="copy"]').onclick = async () => {
       await api.copyScript(s.id);
@@ -334,8 +412,89 @@ async function renderList() {
         renderList();
       }
     };
-    main.appendChild(card);
+    listContainer.appendChild(card);
   }
+
+  // Update count
+  const countEl = document.getElementById("scripts-count");
+  if (countEl) {
+    countEl.textContent = scriptSearch ? `${filtered.length} result${filtered.length !== 1 ? "s" : ""}` : `${filtered.length} script${filtered.length !== 1 ? "s" : ""}`;
+  }
+}
+
+async function renderList() {
+  isEditingScript = false;
+  allScripts = await api.listScripts();
+  refreshRunSelect();
+  refreshRecentScripts();
+
+  main.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.className = "list-header";
+
+  const headerTop = document.createElement("div");
+  headerTop.className = "list-header-top";
+
+  const title = document.createElement("h2");
+  title.style.margin = "0";
+  title.textContent = "Scripts";
+
+  const newBtn = document.createElement("button");
+  newBtn.className = "btn primary";
+  newBtn.textContent = "+ New script";
+  newBtn.onclick = () => renderEditor(null);
+
+  headerTop.appendChild(title);
+  headerTop.appendChild(newBtn);
+  header.appendChild(headerTop);
+
+  // Add search and filter row
+  const searchContainer = document.createElement("div");
+  searchContainer.style.display = "flex";
+  searchContainer.style.gap = "12px";
+  searchContainer.style.alignItems = "center";
+
+  const searchBox = document.createElement("div");
+  searchBox.className = "script-search";
+  searchBox.innerHTML = `<span class="script-search-icon">🔍</span><input type="text" id="scripts-search" placeholder="Search scripts...">`;
+
+  const countLabel = document.createElement("span");
+  countLabel.id = "scripts-count";
+  countLabel.className = "script-count";
+  countLabel.textContent = `${allScripts.length} script${allScripts.length !== 1 ? "s" : ""}`;
+
+  searchContainer.appendChild(searchBox);
+  searchContainer.appendChild(countLabel);
+  header.appendChild(searchContainer);
+
+  main.appendChild(header);
+
+  // Setup search input with debounce
+  const debouncedSearch = debounce((value) => {
+    scriptSearch = value;
+    filterAndDisplayScripts();
+  }, 150);
+
+  document.getElementById("scripts-search").oninput = (e) => {
+    debouncedSearch(e.target.value);
+  };
+
+  if (allScripts.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No scripts yet. Create one to get started.";
+    main.appendChild(empty);
+    return;
+  }
+
+  // Create list container
+  const listContainer = document.createElement("div");
+  listContainer.id = "scripts-list";
+  main.appendChild(listContainer);
+
+  // Initial display
+  filterAndDisplayScripts();
 }
 
 // -----
@@ -343,6 +502,7 @@ async function renderList() {
 // -----
 
 async function renderEditor(scriptId) {
+  isEditingScript = true;
   const isNew = scriptId === null;
   const script = isNew
     ? { id: null, name: "", description: "", steps: [] }
@@ -376,7 +536,10 @@ async function renderEditor(scriptId) {
   editor.querySelector("#add-step").onclick = () => {
     stepsList.appendChild(buildStepRow(["press", "", 0.1], script.id));
   };
-  editor.querySelector("#cancel-btn").onclick = () => renderList();
+  editor.querySelector("#cancel-btn").onclick = () => {
+    isEditingScript = false;
+    renderList();
+  };
   editor.querySelector("#save-btn").onclick = async () => {
     const name = editor.querySelector("#f-name").value.trim();
     if (!name) {
@@ -395,6 +558,7 @@ async function renderEditor(scriptId) {
       await showPreview(saved.id, editor.querySelector("#preview-box"));
       allScripts = await api.listScripts();
       refreshRunSelect();
+      refreshRecentScripts();
       renderEditor(saved.id);
     } catch (e) {
       alert("Couldn't save: " + e.message);
@@ -493,21 +657,81 @@ function readSteps(stepsList) {
 // Sidebar: run controls + status polling + settings
 // -----
 
+// Status polling state and local countdown timer
+let statusPollState = {
+  pollTimer: null,
+  isRunning: false,
+};
+
+// Local countdown timer state (client-side, deterministic timing)
+let countdownState = {
+  totalDurationMs: null,
+  startTime: null,
+  updateAnimationFrameId: null,
+  timerEl: null,
+};
+
+const POLL_INTERVAL = 5000; // Poll device every 5 seconds (verification only, not for timing)
+
 function refreshRunSelect() {
   const sel = document.getElementById("run-script-select");
-  const current = sel.value;
+  const current = sel.value || lastRunScriptId;
   sel.innerHTML = "";
   for (const s of allScripts) {
     const opt = document.createElement("option");
     opt.value = s.id;
-    opt.textContent = s.name;
+    opt.textContent = (s.id === lastRunScriptId ? "↻ " : "") + s.name;
     sel.appendChild(opt);
   }
   if (current) sel.value = current;
 }
 
+function addToRecentScripts(scriptId) {
+  // Remove if already in list, then add to front
+  recentScriptIds = recentScriptIds.filter(id => id !== scriptId);
+  recentScriptIds.unshift(scriptId);
+  // Keep only last 5
+  recentScriptIds = recentScriptIds.slice(0, 5);
+  localStorage.setItem("recentScriptIds", JSON.stringify(recentScriptIds));
+  refreshRecentScripts();
+}
+
+function refreshRecentScripts() {
+  const container = document.getElementById("recent-scripts-container");
+  const list = document.getElementById("recent-scripts-list");
+  if (!container || !list) return;
+
+  // Filter to only scripts that still exist
+  const existingRecentIds = recentScriptIds.filter(id =>
+    allScripts.some(s => s.id === id)
+  );
+
+  if (existingRecentIds.length === 0) {
+    container.style.display = "none";
+    return;
+  }
+
+  container.style.display = "block";
+  list.innerHTML = "";
+
+  for (const id of existingRecentIds) {
+    const script = allScripts.find(s => s.id === id);
+    if (!script) continue;
+
+    const btn = document.createElement("button");
+    btn.className = "recent-script-btn";
+    btn.textContent = script.name;
+    btn.onclick = () => {
+      document.getElementById("run-script-select").value = id;
+    };
+    list.appendChild(btn);
+  }
+}
+
 document.getElementById("run-start-btn").onclick = async () => {
   const errBox = document.getElementById("run-error");
+  const btn = document.getElementById("run-start-btn");
+  const stopBtn = document.getElementById("run-stop-btn");
   errBox.textContent = "";
   const scriptId = document.getElementById("run-script-select").value;
   const timesVal = document.getElementById("run-times").value;
@@ -517,10 +741,38 @@ document.getElementById("run-start-btn").onclick = async () => {
     return;
   }
   try {
+    // Optimistic UI: disable button and show loading state
+    btn.disabled = true;
+    btn.textContent = "Starting...";
+
+    // Fetch preview to get duration_seconds BEFORE starting
+    const preview = await api.previewScript(scriptId);
+    if (!preview.ok) {
+      throw new Error("Cannot run: " + preview.error);
+    }
+
+    // Calculate total duration client-side
+    const durationSeconds = preview.duration_seconds;
+    const loopCount = times || 1;
+    const totalDurationMs = durationSeconds * loopCount * 1000;
+
+    // Start the script
     await api.runScript(scriptId, times);
-    pollStatus();
+    lastRunScriptId = scriptId;
+    localStorage.setItem("lastRunScriptId", scriptId);
+    addToRecentScripts(scriptId);
+
+    // Start the local countdown timer with the calculated duration
+    startLocalCountdown(totalDurationMs);
+
+    // Initial status poll and periodic polling (5 seconds, for verification only)
+    await pollStatus();
+    if (statusPollState.pollTimer) clearInterval(statusPollState.pollTimer);
+    statusPollState.pollTimer = setInterval(pollStatus, POLL_INTERVAL);
   } catch (e) {
     errBox.textContent = e.message;
+    btn.disabled = false;
+    btn.textContent = "Start";
   }
 };
 
@@ -528,33 +780,132 @@ document.getElementById("run-stop-btn").onclick = async () => {
   const errBox = document.getElementById("run-error");
   errBox.textContent = "";
   try {
+    // Stop the local countdown immediately
+    stopLocalCountdown();
+    // Stop device polling
+    if (statusPollState.pollTimer) {
+      clearInterval(statusPollState.pollTimer);
+      statusPollState.pollTimer = null;
+    }
+    // Send stop request to device
     await api.deviceStop();
-    pollStatus();
+    // Verify device stopped
+    await pollStatus();
   } catch (e) {
     errBox.textContent = e.message;
   }
 };
 
-async function pollStatus() {
-  try {
-    const s = await api.deviceStatus();
-    document.getElementById("st-running").textContent = s.running ? "yes" : "no";
-    const target = s.target_loops === null || s.target_loops === undefined ? "∞" : s.target_loops;
-    document.getElementById("st-loop").textContent = `${s.loop_count} / ${target}`;
-    document.getElementById("st-step").textContent = `${s.current_step + 1} / ${s.total_steps}`;
-    document.getElementById("st-eta").textContent =
-      s.estimated_seconds_remaining === null || s.estimated_seconds_remaining === undefined
-        ? "-"
-        : formatDuration(s.estimated_seconds_remaining);
-  } catch (e) {
-    document.getElementById("st-running").textContent = "unreachable";
-    document.getElementById("st-loop").textContent = "-";
-    document.getElementById("st-step").textContent = "-";
-    document.getElementById("st-eta").textContent = "-";
+function updateDeviceIndicator(status) {
+  const dot = document.querySelector(".device-indicator-dot");
+  const label = document.getElementById("device-indicator-label");
+  if (!dot || !label) return;
+
+  dot.className = "device-indicator-dot";
+  if (status === "connected") {
+    dot.classList.add("connected");
+    label.textContent = "Connected";
+  } else if (status === "unreachable") {
+    dot.classList.add("unreachable");
+    label.textContent = "Unreachable";
+  } else {
+    dot.classList.add("connecting");
+    label.textContent = "Connecting";
   }
 }
 
-setInterval(pollStatus, 1500);
+async function pollStatus() {
+  try {
+    const s = await api.deviceStatus();
+    const wasRunning = statusPollState.isRunning;
+
+    const runningEl = document.getElementById("st-running");
+    runningEl.textContent = s.running ? "yes" : "no";
+    runningEl.classList.toggle("status-running", s.running);
+    runningEl.classList.toggle("status-idle", !s.running);
+    const target = s.target_loops === null || s.target_loops === undefined ? "∞" : s.target_loops;
+    document.getElementById("st-loop").textContent = `${s.loop_count} / ${target}`;
+    document.getElementById("st-step").textContent = `${s.current_step + 1} / ${s.total_steps}`;
+
+    // Update device indicator
+    updateDeviceIndicator("connected");
+
+    // Manage countdown state
+    if (s.running && !wasRunning) {
+      statusPollState.isRunning = true;
+    } else if (!s.running && wasRunning) {
+      stopLocalCountdown();
+      statusPollState.isRunning = false;
+    }
+  } catch (e) {
+    // Device unreachable
+    stopLocalCountdown();
+    statusPollState.isRunning = false;
+
+    const runningEl = document.getElementById("st-running");
+    runningEl.textContent = "unreachable";
+    runningEl.classList.remove("status-running", "status-idle");
+    document.getElementById("st-loop").textContent = "-";
+    document.getElementById("st-step").textContent = "-";
+
+    // Update device indicator
+    updateDeviceIndicator("unreachable");
+  }
+}
+
+function updateLocalCountdownDisplay() {
+  const etaEl = document.getElementById("st-eta");
+  if (countdownState.totalDurationMs === null || countdownState.startTime === null) {
+    etaEl.textContent = "-";
+    return;
+  }
+
+  const now = Date.now();
+  const elapsedMs = now - countdownState.startTime;
+  const remainingMs = Math.max(0, countdownState.totalDurationMs - elapsedMs);
+  const remainingSeconds = remainingMs / 1000;
+
+  const displayValue = formatDuration(remainingSeconds);
+  etaEl.textContent = displayValue;
+
+  // Stop if countdown is done
+  if (remainingMs === 0) {
+    stopLocalCountdown();
+  }
+}
+
+function startLocalCountdown(totalDurationMs) {
+  // Cancel any existing countdown
+  if (countdownState.updateAnimationFrameId !== null) {
+    cancelAnimationFrame(countdownState.updateAnimationFrameId);
+  }
+
+  countdownState.totalDurationMs = totalDurationMs;
+  countdownState.startTime = Date.now();
+
+  function animationLoop() {
+    updateLocalCountdownDisplay();
+    if (countdownState.totalDurationMs !== null) {
+      countdownState.updateAnimationFrameId = requestAnimationFrame(animationLoop);
+    }
+  }
+
+  animationLoop();
+}
+
+function stopLocalCountdown() {
+  if (countdownState.updateAnimationFrameId !== null) {
+    cancelAnimationFrame(countdownState.updateAnimationFrameId);
+    countdownState.updateAnimationFrameId = null;
+  }
+  countdownState.totalDurationMs = null;
+  countdownState.startTime = null;
+  document.getElementById("st-eta").textContent = "-";
+}
+
+// Initialize device indicator and perform initial status poll
+updateDeviceIndicator("connecting");
+pollStatus();
 
 document.getElementById("device-url-save").onclick = async () => {
   const url = document.getElementById("device-url").value.trim();
@@ -639,5 +990,20 @@ function escapeAttr(str) {
   initSidebarSections();
   await renderList();
   await loadSettings();
-  pollStatus();
+
+  // Initial status poll and setup animation loop
+  await pollStatus();
+
+  // Add keyboard shortcut hints
+  const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
+  const cmdKey = isMac ? "⌘" : "Ctrl";
+  document.getElementById("recording-toggle-btn").title = `${cmdKey}+R: Toggle recording`;
+  document.getElementById("run-start-btn").title = `${cmdKey}+Enter: Run script`;
+
+  // Display keyboard hints in sidebar if desired
+  const sidebar = document.getElementById("sidebar");
+  const shortcutsHint = document.createElement("div");
+  shortcutsHint.style.cssText = "font-size: 11px; color: var(--muted); padding: 10px; border-top: 1px solid var(--border); margin-top: auto; text-align: center;";
+  shortcutsHint.textContent = `Shortcuts: ${cmdKey}+R record • ${cmdKey}+⏎ run • ${cmdKey}+S save`;
+  sidebar.appendChild(shortcutsHint);
 })();

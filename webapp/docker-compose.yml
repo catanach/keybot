@@ -1,9 +1,11 @@
+# Updated 2026-09-02 18:20:00 - Force rebuild with volume mount
 services:
   keybot-web:
     build: .
     ports:
       - "8000:8000"
     volumes:
+      - ./app:/app/app
       - ./data:/data
       - ../src:/firmware_src:ro
     restart: unless-stopped

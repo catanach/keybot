@@ -89,12 +89,9 @@ let recentScriptIds = JSON.parse(localStorage.getItem("recentScriptIds") || "[]"
 
 // Keyboard shortcuts setup
 document.addEventListener("keydown", (e) => {
-  // Cmd/Ctrl + R: toggle recording
-  if ((e.metaKey || e.ctrlKey) && e.key === "r") {
-    e.preventDefault();
-    const btn = document.getElementById("recording-toggle-btn");
-    btn.click();
-  }
+  // There is deliberately no Cmd/Ctrl + R shortcut. That combination is
+  // muscle memory for refreshing the page, and binding it here swallowed
+  // the refresh and started a recording instead.
   // Cmd/Ctrl + Enter: run selected script
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
     e.preventDefault();
@@ -226,12 +223,14 @@ function stopRecording() {
 function recordKeystroke(event) {
   if (!recordingState.isRecording) return;
 
-  // Ignore Cmd/Meta key and modifier-only keys
-  if (event.metaKey || event.ctrlKey || event.altKey) {
-    if (event.key === "Meta" || event.key === "Control" || event.key === "Alt" || event.key === "Shift") {
-      return;
-    }
-  }
+  // Never capture anything while Cmd, Ctrl or Alt is held. Those are
+  // browser and OS shortcuts, not keystrokes anyone means to record.
+  // The old check only skipped the modifier key itself, so reaching for
+  // Cmd+R or Cmd+L dropped a stray letter into the script.
+  if (event.metaKey || event.ctrlKey || event.altKey) return;
+
+  // A modifier pressed on its own is never a recordable keystroke.
+  if (["Meta", "Control", "Alt", "Shift", "CapsLock"].includes(event.key)) return;
 
   // Skip certain keys (like Tab, which we use for navigation)
   const skipKeys = ["Tab", "Escape", "F5"];

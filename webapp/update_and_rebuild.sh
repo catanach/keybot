@@ -12,6 +12,7 @@ set -eo pipefail
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$PATH"
 
 cd "$(dirname "${BASH_SOURCE[0]}")/.."   # repo root (this script lives in webapp/)
+REPO_ROOT="$(pwd)"
 LOG="webapp/update.log"
 
 {
@@ -76,7 +77,7 @@ LOG="webapp/update.log"
     fi
   else
     echo "Already up to date, ensuring container is running..."
-    cd webapp
+    cd "$REPO_ROOT/webapp"
     # Make sure container is actually running
     if ! docker compose ps -q | grep -q .; then
       echo "Container not running, starting it..."
@@ -84,7 +85,7 @@ LOG="webapp/update.log"
     fi
   fi
 
-  cd webapp
+  cd "$REPO_ROOT/webapp"
   echo "Container status:"
   docker compose ps 2>&1
   

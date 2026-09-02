@@ -1055,13 +1055,15 @@ function escapeAttr(str) {
   // Add keyboard shortcut hints
   const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);
   const cmdKey = isMac ? "⌘" : "Ctrl";
-  document.getElementById("recording-toggle-btn").title = `${cmdKey}+R: Toggle recording`;
+  // No Cmd+R hint: that binding was removed because it swallowed the
+  // browser's refresh. Advertising a shortcut that does not exist costs
+  // more trust than the shortcut was worth.
   document.getElementById("run-start-btn").title = `${cmdKey}+Enter: Run script`;
 
   // Display keyboard hints in sidebar if desired
   const sidebar = document.getElementById("sidebar");
   const shortcutsHint = document.createElement("div");
   shortcutsHint.style.cssText = "font-size: 11px; color: var(--muted); padding: 10px; border-top: 1px solid var(--border); margin-top: auto; text-align: center;";
-  shortcutsHint.textContent = `Shortcuts: ${cmdKey}+R record • ${cmdKey}+⏎ run • ${cmdKey}+S save`;
+  shortcutsHint.textContent = `Shortcuts: ${cmdKey}+⏎ run • ${cmdKey}+S save`;
   sidebar.appendChild(shortcutsHint);
 })();

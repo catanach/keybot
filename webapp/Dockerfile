@@ -14,4 +14,4 @@ EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 # Force rebuild trigger - App version update
-ENV APP_BUILD_DATE="2026-09-02-18-25"
+ENV APP_BUILD_DATE="2026-09-02-19-15"

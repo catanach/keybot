@@ -1,7 +1,10 @@
-# Updated 2026-09-02 18:20:00 - Force rebuild with volume mount
+# Updated 2026-09-02 19:30 - Force rebuild with cache buster
 services:
   keybot-web:
-    build: .
+    build:
+      context: .
+      args:
+        BUILD_TIMESTAMP: "$(date +%s)"
     ports:
       - "8000:8000"
     volumes:

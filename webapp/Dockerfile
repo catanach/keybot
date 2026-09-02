@@ -11,7 +11,7 @@ RUN echo "Build timestamp: $BUILD_TIMESTAMP"
 
 COPY app/ ./app/
 
-ENV KEYBOT_DATA_DIR=/tmp/keybot_data
+ENV KEYBOT_DATA_DIR=/data
 ENV PORT=8000
 
 EXPOSE 8000

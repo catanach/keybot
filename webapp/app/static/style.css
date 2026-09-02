@@ -757,3 +757,18 @@ details summary {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--muted);
 }
+
+/* Shown when the device reports that a run stopped early. The firmware
+   sends a plain-language reason, e.g. "stopped at step 2 of 5: there is
+   no key called 'UP'". Without this the script just stopped and the
+   screen gave no clue why. */
+.status-fault {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: 6px;
+  border: 1px solid #6b3030;
+  background: #2a1618;
+  color: #ffb4b4;
+  font-size: 12px;
+  line-height: 1.45;
+}

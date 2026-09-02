@@ -220,6 +220,46 @@ function stopRecording() {
   recordingCancelBtn.style.display = "inline-block";
 }
 
+// Browser key events do not use the same names as the keyboard library on
+// the Pico. The recorder used to send "UP" and "1", which the device has no
+// key for, so any recording containing an arrow or a digit failed at run
+// time. These map a physical key to the name the firmware expects. Reading
+// event.code rather than event.key means the physical key is captured
+// regardless of Shift or keyboard layout.
+const RECORDER_CODE_MAP = {
+  Enter: "ENTER", NumpadEnter: "KEYPAD_ENTER", Space: "SPACE", Tab: "TAB",
+  Backspace: "BACKSPACE", Delete: "DELETE", Escape: "ESCAPE",
+  ArrowUp: "UP_ARROW", ArrowDown: "DOWN_ARROW",
+  ArrowLeft: "LEFT_ARROW", ArrowRight: "RIGHT_ARROW",
+  Home: "HOME", End: "END", PageUp: "PAGE_UP", PageDown: "PAGE_DOWN",
+  Insert: "INSERT", CapsLock: "CAPS_LOCK",
+  Minus: "MINUS", Equal: "EQUALS",
+  BracketLeft: "LEFT_BRACKET", BracketRight: "RIGHT_BRACKET",
+  Backslash: "BACKSLASH", Semicolon: "SEMICOLON", Quote: "QUOTE",
+  Backquote: "GRAVE_ACCENT", Comma: "COMMA", Period: "PERIOD",
+  Slash: "FORWARD_SLASH",
+};
+const DIGIT_NAMES = ["ZERO", "ONE", "TWO", "THREE", "FOUR", "FIVE", "SIX",
+                     "SEVEN", "EIGHT", "NINE"];
+
+function toKeycodeName(event) {
+  const code = event.code || "";
+  if (Object.prototype.hasOwnProperty.call(RECORDER_CODE_MAP, code)) {
+    return RECORDER_CODE_MAP[code];
+  }
+  let m = /^Key([A-Z])$/.exec(code);
+  if (m) return m[1];
+  m = /^Digit([0-9])$/.exec(code);
+  if (m) return DIGIT_NAMES[Number(m[1])];
+  m = /^Numpad([0-9])$/.exec(code);
+  if (m) return "KEYPAD_" + DIGIT_NAMES[Number(m[1])];
+  if (/^F([1-9]|1[0-9]|2[0-4])$/.test(code)) return code;
+  // Some layouts and remappers leave event.code empty.
+  const key = event.key || "";
+  if (/^[a-zA-Z]$/.test(key)) return key.toUpperCase();
+  return null;
+}
+
 function recordKeystroke(event) {
   if (!recordingState.isRecording) return;
 
@@ -232,9 +272,18 @@ function recordKeystroke(event) {
   // A modifier pressed on its own is never a recordable keystroke.
   if (["Meta", "Control", "Alt", "Shift", "CapsLock"].includes(event.key)) return;
 
-  // Skip certain keys (like Tab, which we use for navigation)
-  const skipKeys = ["Tab", "Escape", "F5"];
-  if (skipKeys.includes(event.key)) return;
+  // F5 stays with the browser so refresh always works. Tab and Escape are
+  // recorded: both are ordinary keys in the apps these scripts drive, and
+  // the Cancel button is there to stop a recording.
+  if (event.key === "F5") return;
+
+  const keyCode = toKeycodeName(event);
+  if (keyCode === null) {
+    recordingError.textContent =
+      'Skipped "' + event.key + '". The keyboard has no key with that name.';
+    return;
+  }
+  event.preventDefault();
 
   const now = Date.now();
   const timeSinceLastKey = (now - recordingState.lastKeyTime) / 1000;
@@ -247,17 +296,6 @@ function recordKeystroke(event) {
   if (recordingState.keystrokeCount > 0 && roundedTime > 0.1) {
     recordingState.capturedScript.push(["wait", Math.max(0.1, roundedTime)]);
   }
-
-  // Map key to keycode
-  let keyCode = event.key.toUpperCase();
-  if (event.key === "Enter") keyCode = "ENTER";
-  if (event.key === " ") keyCode = "SPACE";
-  if (event.key === "Backspace") keyCode = "BACKSPACE";
-  if (event.key === "Delete") keyCode = "DELETE";
-  if (event.key === "ArrowUp") keyCode = "UP";
-  if (event.key === "ArrowDown") keyCode = "DOWN";
-  if (event.key === "ArrowLeft") keyCode = "LEFT";
-  if (event.key === "ArrowRight") keyCode = "RIGHT";
 
   recordingState.capturedScript.push(["press", keyCode, 0.1]);
   recordingState.keystrokeCount++;
@@ -829,6 +867,11 @@ async function pollStatus() {
     // Update device indicator
     updateDeviceIndicator("connected");
 
+    // Show why a run stopped early. The firmware reports last_error when a
+    // step fails and last_fault when it recovers from something worse.
+    // Previously a script could stop dead with nothing on screen saying so.
+    showDeviceFault(s.last_error || s.last_fault || null);
+
     // Manage countdown state
     if (s.running && !wasRunning) {
       statusPollState.isRunning = true;
@@ -849,6 +892,19 @@ async function pollStatus() {
 
     // Update device indicator
     updateDeviceIndicator("unreachable");
+    showDeviceFault(null);
+  }
+}
+
+function showDeviceFault(message) {
+  const el = document.getElementById("st-fault");
+  if (!el) return;
+  if (message) {
+    el.textContent = message;
+    el.style.display = "block";
+  } else {
+    el.textContent = "";
+    el.style.display = "none";
   }
 }
 

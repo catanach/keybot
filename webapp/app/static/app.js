@@ -70,9 +70,220 @@ async function fetchJson(url, method, body) {
 const main = document.getElementById("main");
 let allScripts = [];
 
-// ---------------------------------------------------------------------
+// Sidebar collapsible sections
+function initSidebarSections() {
+  const titles = document.querySelectorAll(".sidebar-section-title");
+  titles.forEach(title => {
+    title.addEventListener("click", () => {
+      const sectionName = title.dataset.section;
+      const content = title.nextElementSibling;
+      const isExpanded = title.classList.contains("expanded");
+
+      if (isExpanded) {
+        title.classList.remove("expanded");
+        title.classList.add("collapsed");
+        content.classList.add("hidden");
+      } else {
+        title.classList.remove("collapsed");
+        title.classList.add("expanded");
+        content.classList.remove("hidden");
+      }
+    });
+  });
+}
+
+// -----
+// Recording mode
+// -----
+
+let recordingState = {
+  isRecording: false,
+  startTime: null,
+  lastKeyTime: null,
+  keystrokeCount: 0,
+  capturedScript: [],
+  elapsedTimer: null,
+};
+
+const recordingToggleBtn = document.getElementById("recording-toggle-btn");
+const recordingSaveBtn = document.getElementById("recording-save-btn");
+const recordingCancelBtn = document.getElementById("recording-cancel-btn");
+const recordingStatus = document.getElementById("recording-status");
+const recordingStatusText = document.getElementById("recording-status-text");
+const recordingKeysCount = document.getElementById("recording-keys");
+const recordingElapsed = document.getElementById("recording-elapsed");
+const recordingPreview = document.getElementById("recording-preview");
+const recordingError = document.getElementById("recording-error");
+
+recordingToggleBtn.addEventListener("click", async () => {
+  if (recordingState.isRecording) {
+    stopRecording();
+  } else {
+    startRecording();
+  }
+});
+
+recordingSaveBtn.addEventListener("click", async () => {
+  await saveRecordedScript();
+});
+
+recordingCancelBtn.addEventListener("click", () => {
+  resetRecording();
+});
+
+function startRecording() {
+  recordingState.isRecording = true;
+  recordingState.startTime = Date.now();
+  recordingState.lastKeyTime = recordingState.startTime;
+  recordingState.keystrokeCount = 0;
+  recordingState.capturedScript = [];
+  recordingError.textContent = "";
+
+  recordingToggleBtn.textContent = "Stop Recording";
+  recordingToggleBtn.classList.add("danger");
+  recordingToggleBtn.classList.remove("primary");
+  recordingStatus.classList.add("recording");
+  recordingStatus.classList.remove("idle");
+  recordingStatusText.textContent = "Recording...";
+  recordingPreview.style.display = "block";
+  recordingPreview.textContent = "[]";
+  recordingSaveBtn.style.display = "none";
+  recordingCancelBtn.style.display = "none";
+
+  // Start elapsed time counter
+  recordingState.elapsedTimer = setInterval(() => {
+    const elapsed = (Date.now() - recordingState.startTime) / 1000;
+    recordingElapsed.textContent = elapsed < 60
+      ? Math.round(elapsed) + "s"
+      : Math.floor(elapsed / 60) + "m " + Math.round(elapsed % 60) + "s";
+  }, 100);
+
+  // Listen for keypresses (this is a simplified version)
+  // In a real implementation, this would hook into the Pico communication
+  // For now, we'll simulate keystroke capture from typing in the page
+  document.addEventListener("keydown", recordKeystroke);
+}
+
+function stopRecording() {
+  recordingState.isRecording = false;
+  document.removeEventListener("keydown", recordKeystroke);
+  clearInterval(recordingState.elapsedTimer);
+
+  recordingToggleBtn.textContent = "Start Recording";
+  recordingToggleBtn.classList.add("primary");
+  recordingToggleBtn.classList.remove("danger");
+  recordingStatus.classList.remove("recording");
+  recordingStatus.classList.add("idle");
+  recordingStatusText.textContent = "Stopped";
+  recordingSaveBtn.style.display = "inline-block";
+  recordingCancelBtn.style.display = "inline-block";
+}
+
+function recordKeystroke(event) {
+  if (!recordingState.isRecording) return;
+
+  // Ignore Cmd/Meta key and modifier-only keys
+  if (event.metaKey || event.ctrlKey || event.altKey) {
+    if (event.key === "Meta" || event.key === "Control" || event.key === "Alt" || event.key === "Shift") {
+      return;
+    }
+  }
+
+  // Skip certain keys (like Tab, which we use for navigation)
+  const skipKeys = ["Tab", "Escape", "F5"];
+  if (skipKeys.includes(event.key)) return;
+
+  const now = Date.now();
+  const timeSinceLastKey = (now - recordingState.lastKeyTime) / 1000;
+  recordingState.lastKeyTime = now;
+
+  // Round to 100ms granularity
+  const roundedTime = Math.round(timeSinceLastKey * 10) / 10;
+
+  // Add wait step if time gap > 0.1s
+  if (recordingState.keystrokeCount > 0 && roundedTime > 0.1) {
+    recordingState.capturedScript.push(["wait", Math.max(0.1, roundedTime)]);
+  }
+
+  // Map key to keycode
+  let keyCode = event.key.toUpperCase();
+  if (event.key === "Enter") keyCode = "ENTER";
+  if (event.key === " ") keyCode = "SPACE";
+  if (event.key === "Backspace") keyCode = "BACKSPACE";
+  if (event.key === "Delete") keyCode = "DELETE";
+  if (event.key === "ArrowUp") keyCode = "UP";
+  if (event.key === "ArrowDown") keyCode = "DOWN";
+  if (event.key === "ArrowLeft") keyCode = "LEFT";
+  if (event.key === "ArrowRight") keyCode = "RIGHT";
+
+  recordingState.capturedScript.push(["press", keyCode, 0.1]);
+  recordingState.keystrokeCount++;
+
+  recordingKeysCount.textContent = recordingState.keystrokeCount;
+  updateRecordingPreview();
+}
+
+function updateRecordingPreview() {
+  const preview = recordingState.capturedScript.slice(-10).map(step => {
+    if (step[0] === "press") {
+      return `["press", "${step[1]}", ${step[2]}]`;
+    } else if (step[0] === "wait") {
+      return `["wait", ${step[1]}]`;
+    }
+    return JSON.stringify(step);
+  }).join("\n");
+  recordingPreview.textContent = preview;
+  recordingPreview.scrollTop = recordingPreview.scrollHeight;
+}
+
+async function saveRecordedScript() {
+  if (recordingState.capturedScript.length === 0) {
+    recordingError.textContent = "No keystrokes recorded.";
+    return;
+  }
+
+  const name = `Recording ${new Date().toLocaleString()}`;
+  try {
+    const saved = await api.createScript({
+      name,
+      description: "Script recorded from keyboard input",
+      steps: recordingState.capturedScript
+    });
+    recordingError.textContent = "";
+    resetRecording();
+    await renderList();
+  } catch (e) {
+    recordingError.textContent = "Couldn't save: " + e.message;
+  }
+}
+
+function resetRecording() {
+  recordingState = {
+    isRecording: false,
+    startTime: null,
+    lastKeyTime: null,
+    keystrokeCount: 0,
+    capturedScript: [],
+    elapsedTimer: null,
+  };
+  recordingToggleBtn.textContent = "Start Recording";
+  recordingToggleBtn.classList.add("primary");
+  recordingToggleBtn.classList.remove("danger");
+  recordingStatus.classList.remove("recording");
+  recordingStatus.classList.add("idle");
+  recordingStatusText.textContent = "Ready";
+  recordingKeysCount.textContent = "0";
+  recordingElapsed.textContent = "0s";
+  recordingPreview.style.display = "none";
+  recordingPreview.textContent = "";
+  recordingSaveBtn.style.display = "none";
+  recordingCancelBtn.style.display = "none";
+  recordingError.textContent = "";
+}
+
+// -----
 // Script list
-// ---------------------------------------------------------------------
+// -----
 
 async function renderList() {
   allScripts = await api.listScripts();
@@ -127,9 +338,9 @@ async function renderList() {
   }
 }
 
-// ---------------------------------------------------------------------
+// -----
 // Script editor
-// ---------------------------------------------------------------------
+// -----
 
 async function renderEditor(scriptId) {
   const isNew = scriptId === null;
@@ -278,13 +489,9 @@ function readSteps(stepsList) {
   return steps;
 }
 
-// ---------------------------------------------------------------------
-// Drawer: run controls + status polling + settings
-// ---------------------------------------------------------------------
-
-const drawer = document.getElementById("drawer");
-document.getElementById("drawer-toggle").onclick = () => drawer.classList.add("open");
-document.getElementById("drawer-close").onclick = () => drawer.classList.remove("open");
+// -----
+// Sidebar: run controls + status polling + settings
+// -----
 
 function refreshRunSelect() {
   const sel = document.getElementById("run-script-select");
@@ -361,9 +568,9 @@ async function loadSettings() {
   document.getElementById("device-url").value = s.device_url;
 }
 
-// ---------------------------------------------------------------------
+// -----
 // Firmware deploy
-// ---------------------------------------------------------------------
+// -----
 
 const deployBtn = document.getElementById("deploy-btn");
 const deployStatusBox = document.getElementById("deploy-status");
@@ -402,9 +609,9 @@ async function pollDeployStatus() {
   }
 }
 
-// ---------------------------------------------------------------------
+// -----
 // Helpers
-// ---------------------------------------------------------------------
+// -----
 
 function formatDuration(totalSeconds) {
   const s = Math.round(totalSeconds);
@@ -424,11 +631,12 @@ function escapeAttr(str) {
   return escapeHtml(str).replace(/"/g, "&quot;");
 }
 
-// ---------------------------------------------------------------------
+// -----
 // Boot
-// ---------------------------------------------------------------------
+// -----
 
 (async function init() {
+  initSidebarSections();
   await renderList();
   await loadSettings();
   pollStatus();

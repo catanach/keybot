@@ -3,6 +3,13 @@ your Mac without the physical hardware. Same routes, same JSON shapes, same
 script format as code.py -- it doesn't press real keys, it just waits the
 same amount of time a real press would take.
 
+Note on /deploy_code: this dev server accepts the same request the real
+Pico does and reports success, but it doesn't actually restart itself the
+way a real firmware deploy does (there's no separate "board" to reboot
+here). It's only useful for checking that the webapp's deploy flow calls
+the right endpoints in the right order, not for testing what happens to a
+real device during a restart -- that only the physical Pico can tell you.
+
 Run it with:
     python3 dev/server.py
 
@@ -25,6 +32,8 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from script_runner import ScriptRunner, DEFAULT_SCRIPT  # noqa: E402
 
 SCRIPT_FILE = os.path.join(os.path.dirname(__file__), "script.json")
+
+DEPLOYABLE_FILES = ("code.py", "script_runner.py")
 
 try:
     with open(SCRIPT_FILE, "r") as f:
@@ -95,7 +104,10 @@ class Handler(BaseHTTPRequestHandler):
             runner.start(times)
             self._send_text("ok")
         elif parsed.path == "/stop":
-            runner.stop()
+            if params.get("after_current", [None])[0]:
+                runner.finish_current_loop()
+            else:
+                runner.stop()
             self._send_text("ok")
         elif parsed.path == "/status":
             self._send_json(runner.status())
@@ -116,6 +128,28 @@ class Handler(BaseHTTPRequestHandler):
             with open(SCRIPT_FILE, "w") as f:
                 json.dump(new_script, f)
             self._send_text("ok")
+        elif parsed.path == "/deploy_code":
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            try:
+                files = json.loads(body)
+            except json.JSONDecodeError as e:
+                self._send_text("error: invalid JSON body ({})".format(e), code=400)
+                return
+            if not isinstance(files, dict) or not files:
+                self._send_text(
+                    "error: expected an object of filename -> file contents", code=400
+                )
+                return
+            for name in files:
+                if name not in DEPLOYABLE_FILES:
+                    self._send_text(
+                        "error: '{}' is not a file this device accepts".format(name), code=400
+                    )
+                    return
+            # Not actually applied -- see the module docstring. This just
+            # confirms the request shape is right.
+            self._send_text("ok, restarting")
         else:
             self._send_text("not found", code=404)
 

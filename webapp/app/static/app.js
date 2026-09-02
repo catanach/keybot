@@ -31,6 +31,12 @@ const api = {
   async deviceStop() {
     return fetchJson("/api/device/stop", "POST", {});
   },
+  async deployStart() {
+    return fetchJson("/api/device/deploy", "POST", {});
+  },
+  async deployStatus() {
+    return fetchJson("/api/device/deploy/status", "GET");
+  },
   async getSettings() {
     return (await fetch("/api/settings")).json();
   },
@@ -353,6 +359,47 @@ document.getElementById("device-url-save").onclick = async () => {
 async function loadSettings() {
   const s = await api.getSettings();
   document.getElementById("device-url").value = s.device_url;
+}
+
+// ---------------------------------------------------------------------
+// Firmware deploy
+// ---------------------------------------------------------------------
+
+const deployBtn = document.getElementById("deploy-btn");
+const deployStatusBox = document.getElementById("deploy-status");
+let deployPollTimer = null;
+
+deployBtn.onclick = async () => {
+  deployBtn.disabled = true;
+  deployStatusBox.className = "hint";
+  deployStatusBox.textContent = "Starting deploy...";
+  try {
+    await api.deployStart();
+  } catch (e) {
+    deployBtn.disabled = false;
+    deployStatusBox.className = "hint error";
+    deployStatusBox.textContent = e.message;
+    return;
+  }
+  if (deployPollTimer) clearInterval(deployPollTimer);
+  deployPollTimer = setInterval(pollDeployStatus, 1200);
+  pollDeployStatus();
+};
+
+async function pollDeployStatus() {
+  let s;
+  try {
+    s = await api.deployStatus();
+  } catch (e) {
+    return; // transient; the next tick will try again
+  }
+  deployStatusBox.textContent = s.message || "";
+  deployStatusBox.className = s.phase === "error" ? "hint error" : "hint";
+  if (s.phase === "done" || s.phase === "error" || s.phase === "idle") {
+    clearInterval(deployPollTimer);
+    deployPollTimer = null;
+    deployBtn.disabled = false;
+  }
 }
 
 // ---------------------------------------------------------------------

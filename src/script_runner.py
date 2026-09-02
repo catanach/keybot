@@ -44,6 +44,18 @@ class ScriptRunner:
     def stop(self):
         self.stop_requested = True
 
+    def finish_current_loop(self):
+        """Let the pass currently in progress finish, then stop -- instead
+        of cutting it off mid-step the way stop() does. Used before a
+        firmware deploy so a step never gets interrupted partway through.
+        If a target loop count is already set and would finish sooner,
+        this leaves it alone."""
+        if not self.running:
+            return
+        limit = self.loop_count + 1
+        if self.target_loops is None or self.target_loops > limit:
+            self.target_loops = limit
+
     def set_script(self, new_script):
         self.script = new_script
 

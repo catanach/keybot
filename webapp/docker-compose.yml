@@ -5,4 +5,5 @@ services:
       - "8000:8000"
     volumes:
       - ./data:/data
+      - ../src:/firmware_src:ro
     restart: unless-stopped

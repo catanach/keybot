@@ -3,6 +3,7 @@ import time
 import json
 import wifi
 import socketpool
+import supervisor
 import usb_hid
 from adafruit_hid.keyboard import Keyboard
 from adafruit_hid.keycode import Keycode
@@ -25,6 +26,14 @@ try:
         SCRIPT = json.load(f)
 except OSError:
     SCRIPT = DEFAULT_SCRIPT
+
+# Set by /deploy_code once new firmware has been written to disk. Checked
+# in the main loop, and only acted on once nothing is running, so a deploy
+# never cuts off a script mid-step.
+code_deploy_requested = False
+
+# The files a deploy is allowed to replace. Anything else is refused.
+DEPLOYABLE_FILES = ("code.py", "script_runner.py")
 
 
 def make_sleep_fn(server, runner):
@@ -70,7 +79,10 @@ try:
 
     @server.route("/stop")
     def stop_handler(request):
-        runner.stop()
+        if request.query_params.get("after_current"):
+            runner.finish_current_loop()
+        else:
+            runner.stop()
         return Response(request, "ok")
 
     @server.route("/update", methods=["POST"])
@@ -93,6 +105,34 @@ try:
             pass
         return Response(request, "ok")
 
+    @server.route("/deploy_code", methods=["POST"])
+    def deploy_code_handler(request):
+        global code_deploy_requested
+        try:
+            files = request.json()
+        except Exception as e:
+            return Response(
+                request, "error: invalid JSON body ({})".format(e), status=(400, "Bad Request")
+            )
+        if not isinstance(files, dict) or not files:
+            return Response(
+                request,
+                "error: expected an object of filename -> file contents",
+                status=(400, "Bad Request"),
+            )
+        for name in files:
+            if name not in DEPLOYABLE_FILES:
+                return Response(
+                    request,
+                    "error: '{}' is not a file this device accepts".format(name),
+                    status=(400, "Bad Request"),
+                )
+        for name, content in files.items():
+            with open("/" + name, "w") as f:
+                f.write(content)
+        code_deploy_requested = True
+        return Response(request, "ok, restarting")
+
     @server.route("/status")
     def status_handler(request):
         return Response(
@@ -103,6 +143,10 @@ try:
 
     while True:
         server.poll()
+
+        if code_deploy_requested and not runner.running:
+            time.sleep(0.5)
+            supervisor.reload()
 
         if runner.running:
             runner.run_one_pass()

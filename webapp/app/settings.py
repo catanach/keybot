@@ -1,5 +1,6 @@
-"""Small persisted settings file -- currently just which device (the local
-dev server or the real Pico) this webapp talks to.
+"""Small persisted settings file: which device (the local dev server or the
+real Pico) this webapp talks to, and what was last told to run on it (so a
+firmware deploy can put the same thing back afterward).
 """
 
 import json
@@ -16,16 +17,44 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 DEFAULT_DEVICE_URL = "http://host.docker.internal:8085"
 
 
-def get_device_url() -> str:
+def _read() -> dict:
     if SETTINGS_FILE.exists():
         try:
-            data = json.loads(SETTINGS_FILE.read_text())
-            return data.get("device_url", DEFAULT_DEVICE_URL)
+            return json.loads(SETTINGS_FILE.read_text())
         except (json.JSONDecodeError, OSError):
             pass
-    return DEFAULT_DEVICE_URL
+    return {}
+
+
+def _write(data: dict) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    SETTINGS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def get_device_url() -> str:
+    return _read().get("device_url", DEFAULT_DEVICE_URL)
 
 
 def set_device_url(url: str) -> None:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    SETTINGS_FILE.write_text(json.dumps({"device_url": url.rstrip("/")}, indent=2))
+    data = _read()
+    data["device_url"] = url.rstrip("/")
+    _write(data)
+
+
+def get_last_run():
+    """The script_id/times that were last told to run, so a firmware
+    deploy can resume the same thing afterward. None if nothing has run
+    yet, or it was cleared by a manual stop."""
+    return _read().get("last_run")
+
+
+def set_last_run(script_id: str, times) -> None:
+    data = _read()
+    data["last_run"] = {"script_id": script_id, "times": times}
+    _write(data)
+
+
+def clear_last_run() -> None:
+    data = _read()
+    data.pop("last_run", None)
+    _write(data)

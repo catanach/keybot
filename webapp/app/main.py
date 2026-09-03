@@ -210,6 +210,12 @@ def _script_name(script_id) -> str:
 
 
 async def _poll_device_once() -> None:
+    # A deploy deliberately stops the script and restarts the board. Polling
+    # through that would record a run that ended normally as a lost one, and
+    # would put a second caller on a board that answers one at a time.
+    if deploy_state.get("phase") not in ("idle", "done", "error"):
+        return
+
     try:
         status = await device.get_status()
     except device.DeviceError as e:

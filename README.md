@@ -113,3 +113,23 @@ Your scripts are saved as JSON files under `webapp/data/scripts/` (created autom
 The panel's "Device settings" section holds one setting: the device URL. It defaults to `http://host.docker.internal:8085`, which reaches `dev/server.py` if it's running directly on your Mac (this special hostname is how a Docker container reaches something on its own host machine — a plain `localhost` won't work here, since that would mean "inside the container").
 
 To point it at the real Pico instead, change this to the Pico's own address, e.g. `http://192.168.10.22:5000`.
+
+## Running the webapp
+
+Two commands, from the `webapp/` folder:
+
+    make deploy    # start it (or restart it after a change)
+    make stop      # stop it
+
+It serves at http://localhost:8000. `make health-check` says whether the webapp
+itself is answering; whether the *Pico* is reachable is shown in the app's own
+Device Status panel, which is a different question.
+
+The other scripts in `webapp/` are not for running by hand:
+
+- `update_and_rebuild.sh` is run every two minutes by a LaunchAgent. It pushes
+  any commits the team has made, rebuilds the container when `webapp/` changes,
+  and drains the GitHub queue. `setup-launchd.sh` installs that LaunchAgent.
+- `start-docker-and-app.sh` is a helper it calls when Docker is not running.
+- `gh-bridge.sh` posts queued GitHub issues and comments. See
+  `docs/issue-grooming.md`.

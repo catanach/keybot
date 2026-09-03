@@ -1,14 +1,14 @@
-# Updated 2026-09-02 19:30 - Force rebuild with cache buster
 services:
   keybot-web:
     build:
       context: .
-      args:
-        BUILD_TIMESTAMP: "$(date +%s)"
     ports:
       - "8000:8000"
     volumes:
       - ./app:/app/app
       - ./data:/data
       - ../src:/firmware_src:ro
+    # app/ is bind-mounted below, so the image layers are never what gets
+    # served. --reload is what the old rebuild scripts were reaching for.
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-dir /app/app
     restart: unless-stopped

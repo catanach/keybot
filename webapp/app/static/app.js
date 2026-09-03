@@ -50,6 +50,9 @@ const api = {
   async deployStatus() {
     return fetchJson("/api/device/deploy/status", "GET");
   },
+  async getHistory() {
+    return (await fetch("/api/history")).json();
+  },
   async getSettings() {
     return (await fetch("/api/settings")).json();
   },
@@ -689,6 +692,146 @@ function readSteps(stepsList) {
   }
   return steps;
 }
+
+// -----
+// Run history
+//
+// The records come from the server's own poller, which watches the device
+// every few seconds whether or not this page is open. Nothing here starts
+// or ends a record -- this is only the view.
+// -----
+
+function historyPhrase(record) {
+  const target =
+    record.target_loops === null || record.target_loops === undefined ? "∞" : record.target_loops;
+  const loops = record.loops_done || 0;
+  if (record.outcome === "finished") return `finished ${loops} of ${target}`;
+  // The pass that failed is the one after the passes that completed.
+  if (record.outcome === "failed") return `failed at loop ${loops + 1} of ${target}`;
+  if (record.outcome === "stopped_by_you") return `you stopped it at loop ${loops} of ${target}`;
+  if (record.outcome === "lost_contact") return `lost contact at loop ${loops} of ${target}`;
+  return `running, loop ${loops} of ${target}`;
+}
+
+// The device says "stopped at step 4 of 12: ...". The row already says
+// which loop it was on, so this trims it to "step 4: ...".
+function shortenRunError(text) {
+  return String(text || "").replace(/^stopped at (step \d+) of \d+/, "$1");
+}
+
+function formatRunDuration(startedAt, endedAt) {
+  const start = new Date(startedAt);
+  const end = new Date(endedAt);
+  if (isNaN(start) || isNaN(end)) return null;
+  const total = Math.max(0, Math.round((end - start) / 1000));
+  const hours = Math.floor(total / 3600);
+  const minutes = Math.floor((total % 3600) / 60);
+  if (hours) return `${hours}h ${minutes}m`;
+  if (minutes) return `${minutes}m ${total % 60}s`;
+  return `${total}s`;
+}
+
+// Relative in the row, absolute in the tooltip: "ended 6:41am" today,
+// "ended Aug 30" before that.
+function formatEndedAt(endedAt) {
+  const when = new Date(endedAt);
+  if (isNaN(when)) return "";
+  if (when.toDateString() === new Date().toDateString()) {
+    const time = when
+      .toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })
+      .toLowerCase()
+      .replace(/\s/g, "");
+    return `ended ${time}`;
+  }
+  return `ended ${when.toLocaleDateString([], { month: "short", day: "numeric" })}`;
+}
+
+function buildHistoryRow(record) {
+  const row = document.createElement("div");
+  row.className = "history-row";
+
+  const name = document.createElement("strong");
+  name.textContent = record.script_name || "(unknown script)";
+  row.appendChild(name);
+
+  const parts = [historyPhrase(record)];
+  if (record.outcome === "finished") {
+    const duration = formatRunDuration(record.started_at, record.ended_at);
+    if (duration) parts.push(duration);
+  }
+  if (record.error) parts.push(shortenRunError(record.error));
+  for (const part of parts) {
+    row.appendChild(document.createTextNode(" - " + part));
+  }
+
+  if (record.ended_at) {
+    row.appendChild(document.createTextNode(" - "));
+    const ended = document.createElement("span");
+    ended.className = "history-ended";
+    ended.textContent = formatEndedAt(record.ended_at);
+    ended.title = new Date(record.ended_at).toLocaleString();
+    row.appendChild(ended);
+  }
+
+  return row;
+}
+
+async function renderHistory() {
+  isEditingScript = false;
+  let records;
+  try {
+    records = await api.getHistory();
+  } catch (e) {
+    main.innerHTML = "";
+    const failed = document.createElement("div");
+    failed.className = "empty-state";
+    failed.textContent = "Couldn't load the run history: " + e.message;
+    main.appendChild(failed);
+    return;
+  }
+
+  main.innerHTML = "";
+
+  const header = document.createElement("div");
+  header.className = "list-header";
+
+  const headerTop = document.createElement("div");
+  headerTop.className = "list-header-top";
+
+  const title = document.createElement("h2");
+  title.style.margin = "0";
+  title.textContent = "History";
+
+  const backBtn = document.createElement("button");
+  backBtn.className = "btn";
+  backBtn.textContent = "Back to scripts";
+  backBtn.onclick = () => renderList();
+
+  headerTop.appendChild(title);
+  headerTop.appendChild(backBtn);
+  header.appendChild(headerTop);
+  main.appendChild(header);
+
+  const note = document.createElement("p");
+  note.className = "history-note";
+  note.textContent =
+    "Every run is recorded whether or not this page is open. The last 50 are kept.";
+  main.appendChild(note);
+
+  if (records.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "empty-state";
+    empty.textContent = "No runs yet. Pick a script and hit Start.";
+    main.appendChild(empty);
+    return;
+  }
+
+  for (const record of records) {
+    main.appendChild(buildHistoryRow(record));
+  }
+}
+
+document.getElementById("history-btn").onclick = () => renderHistory();
 
 // -----
 // Sidebar: run controls + status polling + settings

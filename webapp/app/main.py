@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from pathlib import Path
 from typing import Optional
 
@@ -9,7 +10,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import storage, flatten, device, settings, firmware
+from . import storage, flatten, device, settings, firmware, history
 
 APP_DIR = Path(__file__).parent
 
@@ -147,6 +148,9 @@ async def api_device_status(request: Request):
 
 
 async def api_device_stop(request: Request):
+    # Remember this stop came from us, so the run is recorded as one you
+    # stopped rather than one that merely ended.
+    note_stop_sent()
     try:
         await device.stop()
     except device.DeviceError as e:
@@ -155,6 +159,115 @@ async def api_device_stop(request: Request):
     # don't let a later deploy bring it back.
     settings.clear_last_run()
     return JSONResponse({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Run history
+#
+# One background task polls the device every 5 seconds regardless of what
+# any browser is doing, and writes one history record per run. A record is
+# opened when the device goes from not running to running, and closed when
+# it goes back. Deriving records from the device this way, rather than from
+# the Start button, means a run started by a firmware deploy is recorded
+# just like one started by hand -- and a run that ends at 3am with nobody
+# watching still gets its ending written down.
+# ---------------------------------------------------------------------------
+
+log = logging.getLogger("keybot")
+
+HISTORY_POLL_SECONDS = 5
+
+# The run currently being recorded, if any. we_stopped_it remembers that
+# the stop came from us, which is the whole difference between "you
+# stopped it" and "it stopped".
+open_run = {"record_id": None, "loops_done": 0, "we_stopped_it": False}
+
+_poller_task = None
+
+
+def note_stop_sent() -> None:
+    open_run["we_stopped_it"] = True
+
+
+def _forget_open_run() -> None:
+    open_run["record_id"] = None
+    open_run["loops_done"] = 0
+    open_run["we_stopped_it"] = False
+
+
+def _script_name(script_id) -> str:
+    script = storage.get_script(script_id) if script_id else None
+    return script["name"] if script else "(unknown script)"
+
+
+async def _poll_device_once() -> None:
+    try:
+        status = await device.get_status()
+    except device.DeviceError as e:
+        # The device stopped answering mid-run. Write that down -- an
+        # unrecorded disappearance is the thing this feature exists to fix.
+        if open_run["record_id"] is not None:
+            history.close_record(
+                open_run["record_id"], open_run["loops_done"], history.LOST_CONTACT, str(e)
+            )
+            _forget_open_run()
+        return
+
+    if status.get("running"):
+        if open_run["record_id"] is None:
+            script_id = (settings.get_last_run() or {}).get("script_id")
+            open_run["record_id"] = history.open_record(
+                script_id, _script_name(script_id), status.get("target_loops")
+            )
+            open_run["we_stopped_it"] = False
+        open_run["loops_done"] = status.get("loop_count", 0)
+    elif open_run["record_id"] is not None:
+        # last_error has to be read here, on the poll that sees the run
+        # end: the next /start wipes it off the device.
+        last_error = status.get("last_error")
+        loops_done = status.get("loop_count", open_run["loops_done"])
+        outcome = history.outcome_for(
+            loops_done, status.get("target_loops"), last_error, open_run["we_stopped_it"]
+        )
+        history.close_record(open_run["record_id"], loops_done, outcome, last_error)
+        _forget_open_run()
+
+
+async def _poll_device_forever() -> None:
+    while True:
+        try:
+            await _poll_device_once()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 -- one bad poll must not end all recording
+            log.exception("run-history poll failed")
+        await asyncio.sleep(HISTORY_POLL_SECONDS)
+
+
+async def start_history_poller() -> None:
+    global _poller_task
+    # A record still open means this app stopped while a run was going --
+    # a container restart, a crash -- and nobody is left to close it.
+    orphans = history.close_open_records()
+    if orphans:
+        log.warning("closed %d run(s) left open when this app last stopped", orphans)
+    _poller_task = asyncio.create_task(_poll_device_forever())
+
+
+async def stop_history_poller() -> None:
+    global _poller_task
+    if _poller_task is None:
+        return
+    _poller_task.cancel()
+    try:
+        await _poller_task
+    except asyncio.CancelledError:
+        pass
+    _poller_task = None
+
+
+async def api_history(request: Request):
+    return JSONResponse(history.load())
 
 
 # ---------------------------------------------------------------------------
@@ -200,6 +313,7 @@ async def _run_deploy(files: dict):
                 "phase": "waiting",
                 "message": "Letting the current loop finish before deploying...",
             }
+            note_stop_sent()
             await device.stop(after_current=True)
             while True:
                 await asyncio.sleep(DEPLOY_POLL_SECONDS)
@@ -287,9 +401,14 @@ routes = [
     Route("/api/device/stop", api_device_stop, methods=["POST"]),
     Route("/api/device/deploy", api_device_deploy, methods=["POST"]),
     Route("/api/device/deploy/status", api_device_deploy_status, methods=["GET"]),
+    Route("/api/history", api_history, methods=["GET"]),
     Route("/api/settings", api_get_settings, methods=["GET"]),
     Route("/api/settings", api_set_settings, methods=["PUT"]),
     Mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static"),
 ]
 
-app = Starlette(routes=routes)
+app = Starlette(
+    routes=routes,
+    on_startup=[start_history_poller],
+    on_shutdown=[stop_history_poller],
+)

@@ -6,6 +6,7 @@ lib/*.uf2
 dev/script.json
 webapp/data/scripts/*.json
 webapp/data/settings.json
+webapp/data/history.json
 
 # Agent transfer artifacts and local logs
 keybot-commits.patch

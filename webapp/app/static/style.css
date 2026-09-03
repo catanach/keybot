@@ -546,6 +546,33 @@ body {
   padding: 48px 0;
 }
 
+/* History */
+
+.history-note {
+  color: var(--muted);
+  font-size: 13px;
+  margin: 0 0 16px;
+}
+
+.history-row {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin-bottom: 8px;
+  font-size: 13px;
+  color: var(--text-secondary);
+  animation: fadeIn var(--transition-slow);
+}
+
+.history-row strong {
+  color: var(--text);
+}
+
+.history-row .history-ended {
+  color: var(--muted);
+}
+
 /* Editor */
 
 .editor {

@@ -45,6 +45,8 @@ class ScriptRunner:
         self.target_loops = None  # None means "loop forever until stopped"
         self.last_error = None  # Why the last run stopped early, if it did.
 
+        self._recompute_durations()
+
     def start(self, times=None):
         self.target_loops = times
         self.loop_count = 0
@@ -75,6 +77,7 @@ class ScriptRunner:
         if not isinstance(new_script, (list, tuple)):
             raise ValueError("a script must be a list of steps")
         self.script = new_script
+        self._recompute_durations()
 
     def _step_problem(self, step):
         """Returns None if the step can be run, or a plain-language
@@ -103,19 +106,32 @@ class ScriptRunner:
             return step[1]
         return 0
 
+    def _recompute_durations(self):
+        """Works out once, when the script is set, how many seconds are
+        left in a pass from each step onward. /status wants that number on
+        every poll and several things poll it, so doing the sum per call
+        meant copying the whole script list each time -- not free on the
+        Pico's small heap. The list has one entry per step plus a trailing
+        zero, so entry 0 is how long a whole pass takes."""
+        seconds_from_step = [0]
+        for step in reversed(self.script):
+            seconds_from_step.append(seconds_from_step[-1] + self._step_duration(step))
+        seconds_from_step.reverse()
+        self._seconds_from_step = seconds_from_step
+
     def _loop_duration(self):
-        return sum(self._step_duration(step) for step in self.script)
+        return self._seconds_from_step[0]
 
     def _estimated_seconds_remaining(self):
         # Only meaningful once running with a target loop count. An
         # indefinite run (no "times" given) has no estimate.
         if not self.running or self.target_loops is None:
             return None
-        remaining_in_this_pass = sum(
-            self._step_duration(step) for step in self.script[self.current_step :]
-        )
+        # current_step can sit past the end if the script was swapped for
+        # a shorter one, so clamp rather than reach off the end.
+        step = min(self.current_step, len(self._seconds_from_step) - 1)
         remaining_full_passes = max(self.target_loops - self.loop_count - 1, 0)
-        return remaining_in_this_pass + remaining_full_passes * self._loop_duration()
+        return self._seconds_from_step[step] + remaining_full_passes * self._loop_duration()
 
     def status(self):
         return {

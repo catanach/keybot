@@ -82,6 +82,12 @@ python3 dev/repro_lockup.py           # the device recovers from bad scripts
 
 `dev/repro_lockup.py` starts its own copy of the dev server on a spare port, feeds it the kinds of broken script the webapp can produce, and checks that the device is still answering and still usable afterwards. Every case has to print PASS.
 
+The webapp has its own tests, which need pytest (a development tool -- it is deliberately kept out of `webapp/requirements.txt` so it never ships inside the container image):
+
+```
+python3 -m pytest webapp/tests   # the run history
+```
+
 ## Management webapp
 
 `webapp/` is a small web app for managing scripts without hand-writing JSON or curl commands. It runs entirely in Docker, so nothing needs to be installed on your Mac except Docker itself.
@@ -107,6 +113,7 @@ Your scripts are saved as JSON files under `webapp/data/scripts/` (created autom
 - A script's steps are either `Press` (a keycode and hold time), `Wait` (seconds), or `Run script` (another script and how many times to repeat it inline).
 - The "Run script" step type is how you compose scripts: a script that runs Script A once, then Script B 10 times, then Script C once is just three "Run script" steps. When you start that composed script, the webapp resolves all the references into one flat sequence before sending it to the device, so the Pico itself doesn't need to know anything about the composition. That flattened sequence is capped at 2,000 steps and checked for circular references (A running B running A), so a mistake there is caught immediately with a clear error instead of hanging the device.
 - A persistent panel on the right lets you pick a script, optionally give it a repeat count, and hit Start or Stop. While something is running it shows the loop count, current step, and an estimated time remaining, refreshed automatically.
+- The History view lists the last 50 runs: which script, how it ended (finished, you stopped it, failed, or lost contact), how many loops it got through, and why it stopped if something went wrong. The webapp watches the device itself every 5 seconds, so a run is recorded whether or not a browser is open -- including one that ends overnight. History lives in `webapp/data/history.json`.
 
 ### Pointing it at the Pico or the dev server
 

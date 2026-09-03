@@ -177,10 +177,18 @@ log = logging.getLogger("keybot")
 
 HISTORY_POLL_SECONDS = 5
 
+# How many polls in a row have to fail before we give up on a run. A Pico W
+# on Wi-Fi drops the odd request, and treating the first miss as the end of
+# the run split one healthy job into two rows with a "lost contact" that
+# never happened. Three misses is 15 seconds of silence, which is a real
+# outage rather than a blip.
+LOST_CONTACT_AFTER_FAILED_POLLS = 3
+
 # The run currently being recorded, if any. we_stopped_it remembers that
 # the stop came from us, which is the whole difference between "you
 # stopped it" and "it stopped".
-open_run = {"record_id": None, "loops_done": 0, "we_stopped_it": False}
+open_run = {"record_id": None, "loops_done": 0, "we_stopped_it": False,
+            "failed_polls": 0}
 
 _poller_task = None
 
@@ -193,6 +201,7 @@ def _forget_open_run() -> None:
     open_run["record_id"] = None
     open_run["loops_done"] = 0
     open_run["we_stopped_it"] = False
+    open_run["failed_polls"] = 0
 
 
 def _script_name(script_id) -> str:
@@ -204,14 +213,19 @@ async def _poll_device_once() -> None:
     try:
         status = await device.get_status()
     except device.DeviceError as e:
-        # The device stopped answering mid-run. Write that down -- an
-        # unrecorded disappearance is the thing this feature exists to fix.
+        # The device stopped answering. An unrecorded disappearance is the
+        # thing this feature exists to fix, but a single dropped request is
+        # not a disappearance -- only give up after several in a row.
         if open_run["record_id"] is not None:
-            history.close_record(
-                open_run["record_id"], open_run["loops_done"], history.LOST_CONTACT, str(e)
-            )
-            _forget_open_run()
+            open_run["failed_polls"] += 1
+            if open_run["failed_polls"] >= LOST_CONTACT_AFTER_FAILED_POLLS:
+                history.close_record(
+                    open_run["record_id"], open_run["loops_done"], history.LOST_CONTACT, str(e)
+                )
+                _forget_open_run()
         return
+
+    open_run["failed_polls"] = 0
 
     if status.get("running"):
         if open_run["record_id"] is None:

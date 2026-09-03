@@ -88,7 +88,7 @@ try:
     # park the main loop waiting on it.
     server.socket_timeout = 2
 
-    runner = ScriptRunner(SCRIPT, press_fn, None, keyboard.release_all)
+    runner = ScriptRunner(SCRIPT, press_fn, None, keyboard.release_all, server.poll)
     runner.sleep_fn = make_sleep_fn(server, runner)
 
     @server.route("/start")

@@ -156,3 +156,63 @@ class StopTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class YieldsBetweenSteps(unittest.TestCase):
+    """Issue #16. A run of "press" steps never called sleep_fn, so on the
+    board the HTTP server was only served once per pass. A recording typed
+    at speed is exactly that shape, so Stop timed out and the Pico looked
+    unreachable. The runner now yields before every step."""
+
+    def _runner(self, script):
+        self.ticks = 0
+        self.pressed = []
+
+        def press_fn(name, hold):
+            self.pressed.append(name)
+
+        def tick_fn():
+            self.ticks += 1
+
+        return ScriptRunner(script, press_fn, lambda s: None, None, tick_fn)
+
+    def test_a_run_of_presses_yields_once_per_step(self):
+        script = [["press", "A", 0.1]] * 20
+        runner = self._runner(script)
+        runner.start(1)
+        runner.run_one_pass()
+        self.assertEqual(self.ticks, 20)
+        self.assertEqual(len(self.pressed), 20)
+
+    def test_a_stop_arriving_during_a_press_run_is_noticed_next_step(self):
+        script = [["press", "A", 0.1]] * 20
+        runner = self._runner(script)
+
+        # Stand in for the stop request arriving while the server is served.
+        original = runner.tick_fn
+
+        def tick_and_stop():
+            original()
+            if self.ticks == 5:
+                runner.stop()
+
+        runner.tick_fn = tick_and_stop
+        runner.start(1)
+        runner.run_one_pass()
+
+        # It stopped promptly rather than running all twenty.
+        self.assertEqual(len(self.pressed), 4)
+        self.assertFalse(runner.running)
+
+    def test_a_failure_while_yielding_does_not_kill_the_run(self):
+        script = [["press", "A", 0.1], ["press", "B", 0.1]]
+        runner = self._runner(script)
+
+        def angry_tick():
+            raise OSError("connection reset")
+
+        runner.tick_fn = angry_tick
+        runner.start(1)
+        runner.run_one_pass()
+        self.assertEqual(self.pressed, ["A", "B"])
+        self.assertIsNone(runner.last_error)

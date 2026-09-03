@@ -103,7 +103,17 @@ def release_fn():
     pass
 
 
-runner = ScriptRunner(SCRIPT, press_fn, sleep_fn, release_fn)
+# tick_fn mirrors the firmware: the real board serves HTTP here. This dev
+# server answers on its own thread, so it only needs to count the yields
+# for the tests.
+tick_count = [0]
+
+
+def tick_fn():
+    tick_count[0] += 1
+
+
+runner = ScriptRunner(SCRIPT, press_fn, sleep_fn, release_fn, tick_fn)
 
 # Matches code.py: the most recent problem outside of a script run,
 # reported by /status.

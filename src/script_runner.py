@@ -32,11 +32,17 @@ def _is_number(value):
 
 
 class ScriptRunner:
-    def __init__(self, script, press_fn, sleep_fn, release_fn=None):
+    def __init__(self, script, press_fn, sleep_fn, release_fn=None, tick_fn=None):
         self.script = script
         self.press_fn = press_fn  # press_fn(keycode_name, hold_seconds)
         self.sleep_fn = sleep_fn  # sleep_fn(seconds), should return early if stop_requested becomes True
         self.release_fn = release_fn  # release_fn(), lets go of every held key. Optional.
+        # tick_fn() is called once before every step. On the device it serves
+        # the HTTP endpoint. Without it, a run of "press" steps never yields,
+        # because only sleep_fn used to give the server a chance -- so a
+        # recording typed at speed, which has no waits in it, made the board
+        # unreachable for the length of the whole pass. Optional.
+        self.tick_fn = tick_fn
 
         self.running = False
         self.stop_requested = False
@@ -169,6 +175,15 @@ class ScriptRunner:
         failed = False
 
         for i, step in enumerate(self.script):
+            # Yield before every step, not only during waits, so a stop or a
+            # status request is always answered within one step.
+            if self.tick_fn is not None:
+                try:
+                    self.tick_fn()
+                except Exception:
+                    # Serving a request must never take the run down with it.
+                    pass
+
             if self.stop_requested:
                 break
             self.current_step = i

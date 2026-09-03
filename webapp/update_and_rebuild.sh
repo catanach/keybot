@@ -38,6 +38,9 @@ LOG="webapp/update.log"
   # and signed-in credentials.
   bash webapp/gh-bridge.sh || echo "gh-bridge failed, continuing"
 
+  # Fire a pending firmware deploy if the Pico has come back on the network.
+  bash webapp/deploy-when-back.sh || echo "deploy-when-back failed, continuing"
+
   BEFORE=$(git rev-parse HEAD)
   git fetch origin main --quiet
   git merge --ff-only origin/main --quiet

@@ -136,7 +136,8 @@ The other scripts in `webapp/` are not for running by hand:
 
 - `update_and_rebuild.sh` is run every two minutes by a LaunchAgent. It pushes
   any commits the team has made, rebuilds the container when `webapp/` changes,
-  and drains the GitHub queue. `setup-launchd.sh` installs that LaunchAgent.
+  and drains the GitHub queue. `setup-launchd.sh` installs a separate agent, `com.keybot.webapp.monitor`,
+  which restarts the container if the webapp stops answering.
 - `start-docker-and-app.sh` is a helper it calls when Docker is not running.
 - `gh-bridge.sh` posts queued GitHub issues and comments. See
   `docs/issue-grooming.md`.

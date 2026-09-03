@@ -56,7 +56,9 @@ async def push_script(steps: list) -> None:
 
 async def start(times: int | None = None) -> None:
     url = f"{settings.get_device_url()}/start"
-    params = {"times": times} if times else {}
+    # `if times` would drop times=0, and a missing times means "run forever"
+    # on the device, which is the opposite of what was asked for.
+    params = {"times": times} if times is not None else {}
     try:
         async with _device_lock, httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.get(url, params=params)

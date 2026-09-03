@@ -131,12 +131,19 @@ async def api_run_script(request: Request):
         return error(str(e))
     if not flat:
         return error("this script has no steps to run")
+    # Recorded before the device is told to start. The poller can see the run
+    # within milliseconds and reads the script id from here, so setting it
+    # afterwards attributed the first moments of a run to the previous script.
+    settings.set_last_run(script_id, body.times)
+    # Starting a script while another is running never makes the device report
+    # not-running, so the poller would keep the old record and credit this run
+    # to the previous script. Close it here.
+    close_open_run(history.STOPPED_BY_YOU)
     try:
         await device.push_script(flat)
         await device.start(body.times)
     except device.DeviceError as e:
         return error(str(e), 502)
-    settings.set_last_run(script_id, body.times)
     return JSONResponse({"ok": True, "step_count": len(flat)})
 
 
@@ -180,8 +187,8 @@ HISTORY_POLL_SECONDS = 5
 # How many polls in a row have to fail before we give up on a run. A Pico W
 # on Wi-Fi drops the odd request, and treating the first miss as the end of
 # the run split one healthy job into two rows with a "lost contact" that
-# never happened. Three misses is 15 seconds of silence, which is a real
-# outage rather than a blip.
+# never happened. Three misses is roughly half a minute of silence once the
+# request timeouts are counted, which is a real outage rather than a blip.
 LOST_CONTACT_AFTER_FAILED_POLLS = 3
 
 # The run currently being recorded, if any. we_stopped_it remembers that
@@ -191,10 +198,25 @@ open_run = {"record_id": None, "loops_done": 0, "we_stopped_it": False,
             "failed_polls": 0}
 
 _poller_task = None
+_deploy_task = None
 
 
 def note_stop_sent() -> None:
     open_run["we_stopped_it"] = True
+
+
+def close_open_run(outcome: str, error: str = None) -> None:
+    """Ends the record for the run in progress, if there is one.
+
+    The poller normally spots a run ending on its own, but it cannot see a
+    boundary the device never exposes: a deploy stops the script and starts
+    it again between two polls, so without this the two runs would be merged
+    into one record and the finished one would be labelled with the deploy's
+    stop."""
+    if open_run["record_id"] is None:
+        return
+    history.close_record(open_run["record_id"], open_run["loops_done"], outcome, error)
+    _forget_open_run()
 
 
 def _forget_open_run() -> None:
@@ -313,7 +335,11 @@ async def api_device_deploy(request: Request):
         files = firmware.load_firmware_files()
     except firmware.FirmwareError as e:
         return error(str(e))
-    asyncio.create_task(_run_deploy(files))
+    global _deploy_task
+    # Held in a module global: asyncio only keeps a weak reference to a task,
+    # so a local would let it be collected mid-deploy, stranding deploy_state
+    # on a non-terminal phase and standing the history poller down for good.
+    _deploy_task = asyncio.create_task(_run_deploy(files))
     return JSONResponse({"ok": True})
 
 
@@ -334,6 +360,10 @@ async def _run_deploy(files: dict):
                 "message": "Letting the current loop finish before deploying...",
             }
             note_stop_sent()
+            # The poller is stood down for the whole deploy, so it will never
+            # see this run end. Close it here or the run we are about to
+            # resume gets appended to this record and inherits its stop.
+            close_open_run(history.STOPPED_BY_YOU)
             await device.stop(after_current=True)
             while True:
                 await asyncio.sleep(DEPLOY_POLL_SECONDS)

@@ -19,3 +19,4 @@ webapp/.gh-queue/
 webapp/gh-bridge.log
 webapp/.deploy-when-back
 webapp/deploy-when-back.log
+webapp/data/history.json.tmp

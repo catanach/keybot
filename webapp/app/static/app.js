@@ -710,6 +710,10 @@ function historyPhrase(record) {
   if (record.outcome === "failed") return `failed at loop ${loops + 1} of ${target}`;
   if (record.outcome === "stopped_by_you") return `you stopped it at loop ${loops} of ${target}`;
   if (record.outcome === "lost_contact") return `lost contact at loop ${loops} of ${target}`;
+  // We asked it to stop and then lost contact, so it never confirmed. It
+  // may have stopped; it may also still be running.
+  if (record.outcome === "stop_unconfirmed")
+    return `stop requested, unconfirmed - loop ${loops} of ${target}`;
   return `running, loop ${loops} of ${target}`;
 }
 
@@ -834,13 +838,50 @@ async function renderHistory() {
 document.getElementById("history-btn").onclick = () => renderHistory();
 
 // -----
-// Sidebar: run controls + status polling + settings
+// The status panel
+//
+// One renderer owns this panel: the status rows, the two lines around
+// them, the Start button and the Stop button. Nothing else in this file
+// writes any of that. The panel used to be painted from half a dozen
+// places -- the Start handler, the Stop handler, two branches of the
+// poller -- and every one of its bugs came from two of them disagreeing.
+//
+// The poll is installed once when the page loads and runs until the page
+// closes. It is never torn down by Start or Stop: a run keeps going with
+// no browser open, so a panel that only polls when this tab started the
+// run is a panel that lies.
 // -----
 
-// Status polling state and local countdown timer
-let statusPollState = {
-  pollTimer: null,
-  isRunning: false,
+const POLL_INTERVAL = 5000; // Ask the device how it's doing every 5 seconds.
+
+// How many checks in a row have to miss before the panel says the board
+// has gone quiet. One or two are a Wi-Fi blip; saying "unreachable" on
+// the first one made a slow answer look like a dead device.
+//
+// The server's history poller has a threshold of its own with the same
+// value. They are deliberately separate counters: that one runs with no
+// browser open and decides what goes in the run history, while this one
+// is per-tab and decides only what is on screen. Browsers slow down
+// timers in background tabs, so sharing a counter would let a tab nobody
+// is looking at spoil a permanent record.
+const MISSED_POLLS_BEFORE_QUIET = 3;
+
+// How long the board gets to confirm a stop before the button is offered
+// again. Shorter than three poll intervals on purpose: at 15 seconds this
+// and the third missed check would fire together and put two different
+// explanations of one event on screen.
+const STOP_CONFIRM_TIMEOUT_MS = 12000;
+
+// Everything the renderer draws from.
+let panel = {
+  lastStatus: null, // the last status the device actually returned
+  lastStatusAt: null, // when it arrived, for "last seen"
+  consecutiveFailedPolls: 0,
+  starting: false, // a Start request is in flight
+  stopRequestedAt: null, // when we asked it to stop, until it confirms
+  stopUnconfirmed: false, // that request went past STOP_CONFIRM_TIMEOUT_MS
+  stoppedAt: null, // {loops, target} from the poll that saw the run end
+  stopTimeoutTimer: null,
 };
 
 // Local countdown timer state (client-side, deterministic timing)
@@ -850,8 +891,6 @@ let countdownState = {
   updateAnimationFrameId: null,
   timerEl: null,
 };
-
-const POLL_INTERVAL = 5000; // Poll device every 5 seconds (verification only, not for timing)
 
 function refreshRunSelect() {
   const sel = document.getElementById("run-script-select");
@@ -908,14 +947,224 @@ function refreshRecentScripts() {
   }
 }
 
+// -----
+// The renderer
+// -----
+
+function formatLoops(status) {
+  const target =
+    status.target_loops === null || status.target_loops === undefined
+      ? "∞"
+      : status.target_loops;
+  return `${status.loop_count} / ${target}`;
+}
+
+function formatSteps(status) {
+  return `${status.current_step + 1} / ${status.total_steps}`;
+}
+
+function stoppedNote(stopped) {
+  if (stopped.target === null || stopped.target === undefined) {
+    return `Stopped at loop ${stopped.loops}.`;
+  }
+  return `Stopped at loop ${stopped.loops} of ${stopped.target}.`;
+}
+
+function goneQuietNote() {
+  if (panel.lastStatus === null) {
+    return "No answer from the Pico since this page opened.";
+  }
+  const seconds = Math.round((Date.now() - panel.lastStatusAt) / 1000);
+  const loops = panel.lastStatus.loop_count;
+  let note = `Last seen ${seconds} seconds ago at loop ${loops}.`;
+  if (panel.stopRequestedAt !== null) {
+    note += " The stop was sent; it may already have stopped.";
+  }
+  return note;
+}
+
+function setPanelLine(id, text) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = text;
+  el.style.display = text ? "block" : "none";
+}
+
+function renderPanel() {
+  const status = panel.lastStatus;
+  // While we are waiting on a stop, a run of missed checks is the same
+  // event, not a second one. Saying both at once would be two messages
+  // for one problem.
+  const waitingOnStop = panel.stopRequestedAt !== null && !panel.stopUnconfirmed;
+  const goneQuiet =
+    panel.consecutiveFailedPolls >= MISSED_POLLS_BEFORE_QUIET && !waitingOnStop;
+
+  let statusText;
+  let statusClass = null;
+  let loopText = "-";
+  let stepText = "-";
+  let note = "";
+  let detail = "";
+  let fault = "";
+  let indicator;
+  let stopEnabled;
+  let stopLabel = "Stop";
+
+  if (status !== null) {
+    loopText = formatLoops(status);
+    stepText = formatSteps(status);
+    // Why a run stopped early. The firmware reports last_error when a step
+    // fails and last_fault when it recovers from something worse.
+    fault = status.last_error || status.last_fault || "";
+  }
+  if (panel.stoppedAt !== null) {
+    note = stoppedNote(panel.stoppedAt);
+  }
+
+  if (goneQuiet) {
+    statusText = "not answering";
+    detail = goneQuietNote();
+    indicator = "unreachable";
+    // Enabled so a stop can be tried again at the moment it matters most.
+    stopEnabled = true;
+  } else if (status === null) {
+    // Nothing has come back yet. Say that, rather than showing an idle
+    // panel that reads as "nothing is running".
+    statusText = "Checking the Pico...";
+    indicator = "connecting";
+    stopEnabled = false;
+  } else if (status.running) {
+    indicator = "connected";
+    statusClass = "status-running";
+    if (waitingOnStop) {
+      statusText = "running - finishing the current step";
+      stopLabel = "Stopping...";
+      stopEnabled = false;
+    } else {
+      statusText = "running";
+      stopEnabled = true;
+    }
+  } else {
+    statusText = "not running";
+    statusClass = "status-idle";
+    indicator = "connected";
+    stopEnabled = false;
+  }
+
+  if (panel.stopUnconfirmed) {
+    // The board never said it stopped. It may have; it may also still be
+    // running and still typing, so the honest thing is to say so and let
+    // her send the stop again.
+    stopEnabled = true;
+    if (!goneQuiet) {
+      detail = "The Pico hasn't confirmed it stopped. Try again, or unplug and replug it.";
+    }
+  }
+
+  const runningEl = document.getElementById("st-running");
+  runningEl.textContent = statusText;
+  runningEl.classList.toggle("status-running", statusClass === "status-running");
+  runningEl.classList.toggle("status-idle", statusClass === "status-idle");
+  document.getElementById("st-loop").textContent = loopText;
+  document.getElementById("st-step").textContent = stepText;
+  setPanelLine("st-note", note);
+  setPanelLine("st-detail", detail);
+  setPanelLine("st-fault", fault);
+  updateDeviceIndicator(indicator);
+
+  const stopBtn = document.getElementById("run-stop-btn");
+  stopBtn.textContent = stopLabel;
+  stopBtn.disabled = !stopEnabled;
+
+  const startBtn = document.getElementById("run-start-btn");
+  if (panel.starting) {
+    startBtn.textContent = "Starting...";
+    startBtn.disabled = true;
+  } else if (status !== null && status.running) {
+    startBtn.textContent = "Running...";
+    startBtn.disabled = true;
+  } else {
+    startBtn.textContent = "Start";
+    startBtn.disabled = false;
+  }
+}
+
+function updateDeviceIndicator(state) {
+  const dot = document.querySelector(".device-indicator-dot");
+  const label = document.getElementById("device-indicator-label");
+  if (!dot || !label) return;
+
+  dot.className = "device-indicator-dot";
+  if (state === "connected") {
+    dot.classList.add("connected");
+    label.textContent = "Connected";
+  } else if (state === "unreachable") {
+    dot.classList.add("unreachable");
+    label.textContent = "Unreachable";
+  } else {
+    dot.classList.add("connecting");
+    label.textContent = "Connecting";
+  }
+}
+
+// -----
+// The poll
+// -----
+
+function forgetStopRequest() {
+  panel.stopRequestedAt = null;
+  panel.stopUnconfirmed = false;
+  if (panel.stopTimeoutTimer !== null) {
+    clearTimeout(panel.stopTimeoutTimer);
+    panel.stopTimeoutTimer = null;
+  }
+}
+
+async function pollStatus() {
+  let status;
+  try {
+    status = await api.deviceStatus();
+  } catch {
+    panel.consecutiveFailedPolls += 1;
+    // One or two misses change nothing on screen: the panel keeps showing
+    // the last thing the device actually said.
+    if (panel.consecutiveFailedPolls >= MISSED_POLLS_BEFORE_QUIET) {
+      stopLocalCountdown();
+    }
+    renderPanel();
+    return;
+  }
+
+  const wasRunning = panel.lastStatus !== null && panel.lastStatus.running;
+  panel.consecutiveFailedPolls = 0;
+  panel.lastStatus = status;
+  panel.lastStatusAt = Date.now();
+
+  if (status.running) {
+    panel.stoppedAt = null;
+  } else {
+    if (wasRunning) {
+      // The poll that sees a run end is the one carrying the loop it got
+      // to -- the same number the server writes into the run history --
+      // so it is taken from here rather than tracked separately.
+      panel.stoppedAt = { loops: status.loop_count, target: status.target_loops };
+      stopLocalCountdown();
+    }
+    // The device says it is not running, which is the confirmation any
+    // pending stop was waiting for.
+    forgetStopRequest();
+  }
+
+  renderPanel();
+}
+
+// -----
+// Run controls
+// -----
+
 document.getElementById("run-start-btn").onclick = async () => {
   const errBox = document.getElementById("run-error");
-  const btn = document.getElementById("run-start-btn");
-  const stopBtn = document.getElementById("run-stop-btn");
   errBox.textContent = "";
-  // Clear the previous run's failure straight away rather than leaving it
-  // on screen until the next poll comes back.
-  showDeviceFault(null);
   const scriptId = document.getElementById("run-script-select").value;
   const timesVal = document.getElementById("run-times").value;
   const times = timesVal ? parseInt(timesVal, 10) : null;
@@ -923,11 +1172,20 @@ document.getElementById("run-start-btn").onclick = async () => {
     errBox.textContent = "Pick a script first.";
     return;
   }
-  try {
-    // Optimistic UI: disable button and show loading state
-    btn.disabled = true;
-    btn.textContent = "Starting...";
 
+  // The previous run's ending is not this run's news: drop its loop count
+  // and its failure now rather than leaving them up until the first poll.
+  panel.stoppedAt = null;
+  if (panel.lastStatus !== null) {
+    panel.lastStatus = Object.assign({}, panel.lastStatus, {
+      last_error: null,
+      last_fault: null,
+    });
+  }
+  panel.starting = true;
+  renderPanel();
+
+  try {
     // Fetch preview to get duration_seconds BEFORE starting
     const preview = await api.previewScript(scriptId);
     if (!preview.ok) {
@@ -947,112 +1205,43 @@ document.getElementById("run-start-btn").onclick = async () => {
 
     // Start the local countdown timer with the calculated duration
     startLocalCountdown(totalDurationMs);
-
-    // Initial status poll and periodic polling (5 seconds, for verification only)
-    await pollStatus();
-    if (statusPollState.pollTimer) clearInterval(statusPollState.pollTimer);
-    statusPollState.pollTimer = setInterval(pollStatus, POLL_INTERVAL);
   } catch (e) {
     errBox.textContent = e.message;
-    btn.disabled = false;
-    btn.textContent = "Start";
+  } finally {
+    // Whether it started or failed, the button goes back to the renderer.
+    // Leaving it stuck on "Starting..." is what jammed it before.
+    panel.starting = false;
+    renderPanel();
   }
+
+  await pollStatus();
 };
 
 document.getElementById("run-stop-btn").onclick = async () => {
   const errBox = document.getElementById("run-error");
   errBox.textContent = "";
+  // The countdown was an estimate for a run that is ending now.
+  stopLocalCountdown();
+
+  // A second press is only possible after the first one timed out, and
+  // means "send it again". The server treats the resend as the same stop.
+  panel.stopRequestedAt = Date.now();
+  panel.stopUnconfirmed = false;
+  if (panel.stopTimeoutTimer !== null) clearTimeout(panel.stopTimeoutTimer);
+  panel.stopTimeoutTimer = setTimeout(() => {
+    panel.stopTimeoutTimer = null;
+    panel.stopUnconfirmed = true;
+    renderPanel();
+  }, STOP_CONFIRM_TIMEOUT_MS);
+  renderPanel();
+
   try {
-    // Stop the local countdown immediately
-    stopLocalCountdown();
-    // Stop device polling
-    if (statusPollState.pollTimer) {
-      clearInterval(statusPollState.pollTimer);
-      statusPollState.pollTimer = null;
-    }
-    // Send stop request to device
     await api.deviceStop();
-    // Verify device stopped
-    await pollStatus();
   } catch (e) {
     errBox.textContent = e.message;
   }
+  await pollStatus();
 };
-
-function updateDeviceIndicator(status) {
-  const dot = document.querySelector(".device-indicator-dot");
-  const label = document.getElementById("device-indicator-label");
-  if (!dot || !label) return;
-
-  dot.className = "device-indicator-dot";
-  if (status === "connected") {
-    dot.classList.add("connected");
-    label.textContent = "Connected";
-  } else if (status === "unreachable") {
-    dot.classList.add("unreachable");
-    label.textContent = "Unreachable";
-  } else {
-    dot.classList.add("connecting");
-    label.textContent = "Connecting";
-  }
-}
-
-async function pollStatus() {
-  try {
-    const s = await api.deviceStatus();
-    const wasRunning = statusPollState.isRunning;
-
-    const runningEl = document.getElementById("st-running");
-    runningEl.textContent = s.running ? "yes" : "no";
-    runningEl.classList.toggle("status-running", s.running);
-    runningEl.classList.toggle("status-idle", !s.running);
-    const target = s.target_loops === null || s.target_loops === undefined ? "∞" : s.target_loops;
-    document.getElementById("st-loop").textContent = `${s.loop_count} / ${target}`;
-    document.getElementById("st-step").textContent = `${s.current_step + 1} / ${s.total_steps}`;
-
-    // Update device indicator
-    updateDeviceIndicator("connected");
-
-    // Show why a run stopped early. The firmware reports last_error when a
-    // step fails and last_fault when it recovers from something worse.
-    // Previously a script could stop dead with nothing on screen saying so.
-    showDeviceFault(s.last_error || s.last_fault || null);
-
-    // Manage countdown state
-    if (s.running && !wasRunning) {
-      statusPollState.isRunning = true;
-    } else if (!s.running && wasRunning) {
-      stopLocalCountdown();
-      statusPollState.isRunning = false;
-    }
-  } catch (e) {
-    // Device unreachable
-    stopLocalCountdown();
-    statusPollState.isRunning = false;
-
-    const runningEl = document.getElementById("st-running");
-    runningEl.textContent = "unreachable";
-    runningEl.classList.remove("status-running", "status-idle");
-    document.getElementById("st-loop").textContent = "-";
-    document.getElementById("st-step").textContent = "-";
-
-    // Update device indicator
-    updateDeviceIndicator("unreachable");
-    showDeviceFault(null);
-  }
-}
-
-function showDeviceFault(message) {
-  const el = document.getElementById("st-fault");
-  if (!el) return;
-  if (message) {
-    el.textContent = message;
-    el.style.display = "block";
-  } else {
-    el.textContent = "";
-    el.style.display = "none";
-  }
-}
 
 function updateLocalCountdownDisplay() {
   const etaEl = document.getElementById("st-eta");
@@ -1103,10 +1292,6 @@ function stopLocalCountdown() {
   countdownState.startTime = null;
   document.getElementById("st-eta").textContent = "-";
 }
-
-// Initialize device indicator and perform initial status poll
-updateDeviceIndicator("connecting");
-pollStatus();
 
 document.getElementById("device-url-save").onclick = async () => {
   const url = document.getElementById("device-url").value.trim();
@@ -1188,12 +1373,18 @@ function escapeAttr(str) {
 // -----
 
 (async function init() {
+  // The panel is live from the moment the page opens to the moment it
+  // closes, whether or not this tab is the one that started the run. A
+  // page opened at 3am on a run that started at 10pm shows that run.
+  // This is set up before the script list loads so the panel says what it
+  // is doing straight away.
+  renderPanel();
+  pollStatus();
+  setInterval(pollStatus, POLL_INTERVAL);
+
   initSidebarSections();
   await renderList();
   await loadSettings();
-
-  // Initial status poll and setup animation loop
-  await pollStatus();
 
   // Add keyboard shortcut hints
   const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);

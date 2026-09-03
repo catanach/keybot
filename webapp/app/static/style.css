@@ -785,6 +785,32 @@ details summary {
   background: var(--muted);
 }
 
+/* The last thing a finished run did, kept above the rows so the loop
+   number it reached does not vanish the moment it stops. */
+.status-note {
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--panel-secondary);
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+/* Explains a status the rows on their own would leave ambiguous: the
+   board has gone quiet, or it has not confirmed a stop we sent. */
+.status-detail {
+  margin-top: 10px;
+  padding: 9px 11px;
+  border-radius: 6px;
+  border: 1px solid #6b5a30;
+  background: #2a2418;
+  color: #ffe0a8;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 /* Shown when the device reports that a run stopped early. The firmware
    sends a plain-language reason, e.g. "stopped at step 2 of 5: there is
    no key called 'UP'". Without this the script just stopped and the

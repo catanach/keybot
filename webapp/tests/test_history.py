@@ -99,6 +99,38 @@ def test_losing_contact_mid_run_records_the_reason():
     assert "can't reach device" in record["error"]
 
 
+def test_a_board_that_went_quiet_after_a_stop_is_not_a_clean_stop():
+    # We asked it to stop and then lost it. It may have stopped; it may
+    # also still be running and still typing. Saying "you stopped it"
+    # would claim something the board never confirmed.
+    assert (
+        history.outcome_for(147, 500, None, True, still_answering=False)
+        == history.STOP_UNCONFIRMED
+    )
+
+
+def test_a_board_that_went_quiet_on_its_own_is_lost_contact():
+    assert (
+        history.outcome_for(147, 500, None, False, still_answering=False)
+        == history.LOST_CONTACT
+    )
+
+
+def test_a_stop_the_board_confirmed_is_still_you_stopped_it():
+    assert history.outcome_for(147, 500, None, True) == history.STOPPED_BY_YOU
+
+
+def test_an_unconfirmed_stop_is_written_to_the_record():
+    record_id = history.open_record("a1", "Overnight farm", 500)
+    history.close_record(
+        record_id, 147, history.STOP_UNCONFIRMED, "can't reach device at http://192.168.10.22:5000"
+    )
+
+    record = history.load()[0]
+    assert record["outcome"] == history.STOP_UNCONFIRMED
+    assert record["loops_done"] == 147
+
+
 # ---------------------------------------------------------------------------
 # Runs left open by a restart
 # ---------------------------------------------------------------------------

@@ -37,12 +37,16 @@ from typing import Optional
 
 MAX_RECORDS = 50
 
-# The four things that can happen to a run. Nothing else is ever written
+# The five things that can happen to a run. Nothing else is ever written
 # to a record's "outcome".
 FINISHED = "finished"
 STOPPED_BY_YOU = "stopped_by_you"
 FAILED = "failed"
 LOST_CONTACT = "lost_contact"
+# We asked the board to stop and then lost contact with it, so it never
+# said it had stopped. It may have; it may also still be running and still
+# typing. Recording that as a clean stop would be a claim we cannot make.
+STOP_UNCONFIRMED = "stop_unconfirmed"
 
 
 def _history_file() -> Path:
@@ -139,14 +143,26 @@ def close_open_records(outcome: str = LOST_CONTACT) -> int:
     return closed
 
 
-def outcome_for(loops_done: int, target_loops, last_error, we_stopped_it: bool) -> str:
-    """Which of the four outcomes a run that just ended gets.
+def outcome_for(
+    loops_done: int,
+    target_loops,
+    last_error,
+    we_stopped_it: bool,
+    still_answering: bool = True,
+) -> str:
+    """Which outcome a run that just ended gets.
 
-    An error the device reported wins, because it's the most specific
-    thing we know. Otherwise, our own /stop is what ended it. Otherwise
-    it ran out its target. A run with no target only ever ends because
-    something stopped it, so that lands on "you stopped it" too.
+    A board that has gone quiet confirmed nothing, so nothing about how
+    the run ended can be read off it. If we had asked it to stop, the
+    honest record is that the stop was sent and never confirmed.
+
+    Otherwise: an error the device reported wins, because it's the most
+    specific thing we know. Otherwise, our own /stop is what ended it.
+    Otherwise it ran out its target. A run with no target only ever ends
+    because something stopped it, so that lands on "you stopped it" too.
     """
+    if not still_answering:
+        return STOP_UNCONFIRMED if we_stopped_it else LOST_CONTACT
     if last_error:
         return FAILED
     if we_stopped_it:

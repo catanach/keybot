@@ -156,16 +156,24 @@ async def api_device_status(request: Request):
 
 
 async def api_device_stop(request: Request):
-    # Remember this stop came from us, so the run is recorded as one you
-    # stopped rather than one that merely ended.
-    note_stop_sent()
+    # Stopping is safe to ask for twice. When the board doesn't confirm the
+    # first stop, the page offers the button again, and that resend must not
+    # look like a second thing happening to the run -- so the bookkeeping
+    # below happens on the first request only and the resend is just the
+    # request itself going out again.
+    first_request = not open_run["we_stopped_it"]
+    if first_request:
+        # Remember this stop came from us, so the run is recorded as one you
+        # stopped rather than one that merely ended.
+        note_stop_sent()
     try:
         await device.stop()
     except device.DeviceError as e:
         return error(str(e), 502)
-    # A manual stop means "I want this off", not "pause it for later" --
-    # don't let a later deploy bring it back.
-    settings.clear_last_run()
+    if first_request:
+        # A manual stop means "I want this off", not "pause it for later" --
+        # don't let a later deploy bring it back.
+        settings.clear_last_run()
     return JSONResponse({"ok": True})
 
 
@@ -287,8 +295,17 @@ async def _poll_device_once() -> None:
         if open_run["record_id"] is not None:
             open_run["failed_polls"] += 1
             if open_run["failed_polls"] >= LOST_CONTACT_AFTER_FAILED_POLLS:
+                # A board that has gone quiet confirmed nothing. If we had
+                # asked it to stop, all we know is that the stop was sent.
+                outcome = history.outcome_for(
+                    open_run["loops_done"],
+                    None,
+                    None,
+                    open_run["we_stopped_it"],
+                    still_answering=False,
+                )
                 history.close_record(
-                    open_run["record_id"], open_run["loops_done"], history.LOST_CONTACT, str(e)
+                    open_run["record_id"], open_run["loops_done"], outcome, str(e)
                 )
                 _forget_open_run()
         return

@@ -1,4 +1,5 @@
 import asyncio
+import os
 import logging
 from pathlib import Path
 from typing import Optional
@@ -191,6 +192,25 @@ HISTORY_POLL_SECONDS = 5
 # request timeouts are counted, which is a real outage rather than a blip.
 LOST_CONTACT_AFTER_FAILED_POLLS = 3
 
+# While a firmware deploy is waiting to happen, poll the board far less
+# often. Firmware older than the issue #2 fix has no socket timeout and no
+# guard around its serve loop, and steady five-second traffic is enough to
+# knock it over -- which then blocks the very deploy that would fix it.
+# The flag lives in the data dir because that is the one directory shared
+# between the container and the Mac.
+DEPLOY_PENDING_FLAG = "deploy-when-back"
+QUIET_POLL_SECONDS = 60
+
+# A single dropped connection is not a reason to abandon a deploy. An old,
+# struggling board often answers the next request fine.
+DEPLOY_STATUS_ATTEMPTS = 5
+DEPLOY_STATUS_RETRY_SECONDS = 4
+
+# The wait for a running script to finish used to be unbounded, so a board
+# that answered but never stopped left the deploy stuck forever with the
+# button disabled and no way back.
+DEPLOY_WAIT_TIMEOUT_SECONDS = 300
+
 # The run currently being recorded, if any. we_stopped_it remembers that
 # the stop came from us, which is the whole difference between "you
 # stopped it" and "it stopped".
@@ -229,6 +249,26 @@ def _forget_open_run() -> None:
 def _script_name(script_id) -> str:
     script = storage.get_script(script_id) if script_id else None
     return script["name"] if script else "(unknown script)"
+
+
+def _firmware_deploy_pending() -> bool:
+    try:
+        return (Path(os.environ.get("KEYBOT_DATA_DIR", "/data")) / DEPLOY_PENDING_FLAG).exists()
+    except OSError:
+        return False
+
+
+async def _status_with_retries(attempts: int = DEPLOY_STATUS_ATTEMPTS):
+    """get_status, but tolerant of a board that drops the odd connection."""
+    last = None
+    for attempt in range(attempts):
+        try:
+            return await device.get_status()
+        except device.DeviceError as e:
+            last = e
+            if attempt + 1 < attempts:
+                await asyncio.sleep(DEPLOY_STATUS_RETRY_SECONDS)
+    raise last
 
 
 async def _poll_device_once() -> None:
@@ -283,7 +323,9 @@ async def _poll_device_forever() -> None:
             raise
         except Exception:  # noqa: BLE001 -- one bad poll must not end all recording
             log.exception("run-history poll failed")
-        await asyncio.sleep(HISTORY_POLL_SECONDS)
+        await asyncio.sleep(
+            QUIET_POLL_SECONDS if _firmware_deploy_pending() else HISTORY_POLL_SECONDS
+        )
 
 
 async def start_history_poller() -> None:
@@ -351,7 +393,7 @@ async def _run_deploy(files: dict):
     global deploy_state
     try:
         deploy_state = {"phase": "checking", "message": "Checking what's currently running..."}
-        status = await device.get_status()
+        status = await _status_with_retries()
         last_run = settings.get_last_run() if status.get("running") else None
 
         if status.get("running"):
@@ -365,14 +407,25 @@ async def _run_deploy(files: dict):
             # resume gets appended to this record and inherits its stop.
             close_open_run(history.STOPPED_BY_YOU)
             await device.stop(after_current=True)
-            while True:
+            waited = 0
+            while waited < DEPLOY_WAIT_TIMEOUT_SECONDS:
                 await asyncio.sleep(DEPLOY_POLL_SECONDS)
+                waited += DEPLOY_POLL_SECONDS
                 try:
                     status = await device.get_status()
                 except device.DeviceError:
                     continue
                 if not status.get("running"):
                     break
+            else:
+                deploy_state = {
+                    "phase": "error",
+                    "message": (
+                        "The script is still running after five minutes, so nothing was "
+                        "sent and the Pico is unchanged. Stop the run and try again."
+                    ),
+                }
+                return
 
         deploy_state = {"phase": "deploying", "message": "Sending new code to the Pico..."}
         await device.deploy_code(files)

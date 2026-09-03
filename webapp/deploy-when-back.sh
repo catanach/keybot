@@ -11,7 +11,10 @@
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$PATH"
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
-FLAG="webapp/.deploy-when-back"
+# The flag lives in the data dir because that is the only directory shared
+# with the container, and the webapp reads it to know it should stop
+# hammering a board that is still on old firmware.
+FLAG="webapp/data/deploy-when-back"
 LOG="webapp/deploy-when-back.log"
 APP="http://localhost:8000"
 
@@ -19,6 +22,12 @@ APP="http://localhost:8000"
 
 STATUS=$(curl -s --max-time 8 "$APP/api/device/status" 2>/dev/null)
 echo "$STATUS" | grep -q '"running"' || exit 0          # board still not answering
+
+# It answered once. Give it a few seconds of quiet before asking it to do
+# real work: old firmware often answers one request and then drops the next.
+sleep 5
+STATUS=$(curl -s --max-time 8 "$APP/api/device/status" 2>/dev/null)
+echo "$STATUS" | grep -q '"running"' || exit 0          # it went away again
 
 # Already on the new firmware? Then there is nothing to do; stand down.
 if echo "$STATUS" | grep -q 'last_error'; then

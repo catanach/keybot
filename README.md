@@ -141,3 +141,25 @@ The other scripts in `webapp/` are not for running by hand:
 - `start-docker-and-app.sh` is a helper it calls when Docker is not running.
 - `gh-bridge.sh` posts queued GitHub issues and comments. See
   `docs/issue-grooming.md`.
+
+## Updating the firmware
+
+From the next restart after `boot.py` is installed, the board owns its own
+filesystem. That is what makes the Deploy button in the webapp work: the Pico
+can rewrite its own `code.py` and `script_runner.py` over WiFi. Before this,
+it could not, and every deploy failed with "Read-only filesystem".
+
+The trade is that CIRCUITPY is read-only on the Mac while this is active, so
+you cannot drag files onto it.
+
+If a deploy ever leaves the board broken:
+
+1. Press the reset button twice in quick succession. CircuitPython skips
+   `boot.py` in safe mode, so CIRCUITPY mounts writable again and
+   `./deploy.sh` works as it used to.
+2. To keep it that way for a while, create an empty file called `HOST_WRITES`
+   on CIRCUITPY while in safe mode. `boot.py` leaves the filesystem alone
+   whenever that file exists. Delete it to go back to over-the-air deploys.
+
+`boot.py` itself is deliberately not deployable over the air. A broken
+`code.py` can be replaced remotely; a broken `boot.py` cannot.

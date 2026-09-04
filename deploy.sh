@@ -56,6 +56,20 @@ cp "$SRC_DIR/code.py" "$CIRCUITPY_VOLUME/code.py"
 cp "$SRC_DIR/script_runner.py" "$CIRCUITPY_VOLUME/script_runner.py"
 echo "Copied code.py and script_runner.py."
 
+# boot.py takes effect on the next power-on and makes the board's storage
+# writable to itself, which is what lets the webapp deploy firmware over
+# WiFi. The side effect is that CIRCUITPY goes read-only on this Mac, so
+# this script cannot be used again until the board is put back into safe
+# mode. Say so rather than letting it be a surprise.
+if [ -f "$SRC_DIR/boot.py" ]; then
+    echo
+    echo "Note: boot.py is now on the board. From its next restart, CIRCUITPY"
+    echo "becomes read-only on this Mac and firmware updates happen from the"
+    echo "webapp instead. To get drag-and-drop back, press reset twice quickly"
+    echo "to enter safe mode."
+    echo
+fi
+
 if [ -f "$SRC_DIR/settings.toml" ]; then
     cp "$SRC_DIR/settings.toml" "$CIRCUITPY_VOLUME/settings.toml"
     echo "Copied settings.toml."

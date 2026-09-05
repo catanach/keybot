@@ -28,6 +28,26 @@ NO_CACHE = {"Cache-Control": "no-cache"}
 VERSIONED_ASSETS = ("app.js", "style.css")
 
 
+def app_version() -> str:
+    """A fingerprint of the page's assets, so a browser can tell whether the
+    tab it is running is still the current one.
+
+    A tab left open does not re-fetch anything until it is reloaded, so it can
+    keep running old JavaScript indefinitely no matter what cache headers say.
+    That has masked working code as broken more than once."""
+    parts = []
+    for name in VERSIONED_ASSETS:
+        try:
+            parts.append(str(int((APP_DIR / "static" / name).stat().st_mtime)))
+        except OSError:
+            parts.append("0")
+    return "-".join(parts)
+
+
+async def api_app_version(request: Request):
+    return JSONResponse({"version": app_version()}, headers=NO_CACHE)
+
+
 def stamp_asset_versions(html: str) -> str:
     for name in VERSIONED_ASSETS:
         try:
@@ -42,6 +62,7 @@ def stamp_asset_versions(html: str) -> str:
 
 async def index(request: Request):
     html = (APP_DIR / "templates" / "index.html").read_text()
+    html = html.replace("</body>", f'<script>window.KEYBOT_VERSION="{app_version()}";</script></body>')
     return HTMLResponse(stamp_asset_versions(html), headers=NO_CACHE)
 
 
@@ -700,6 +721,7 @@ async def api_set_settings(request: Request):
 
 routes = [
     Route("/", index),
+    Route("/api/app-version", api_app_version, methods=["GET"]),
     Route("/api/scripts", api_list_scripts, methods=["GET"]),
     Route("/api/scripts", api_create_script, methods=["POST"]),
     Route("/api/scripts/{script_id}", api_get_script, methods=["GET"]),

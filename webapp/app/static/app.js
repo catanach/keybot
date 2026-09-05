@@ -1674,6 +1674,25 @@ function forgetStopRequest() {
   }
 }
 
+// A tab left open keeps running whatever JavaScript it loaded, however old.
+// Cache headers cannot help with that, and it has made working code look
+// broken more than once. Compare what this tab is running against what the
+// server has, and say so rather than letting it be a mystery.
+async function checkPageVersion() {
+  if (!window.KEYBOT_VERSION) return;
+  try {
+    const r = await fetch("/api/app-version", { cache: "no-store" });
+    if (!r.ok) return;
+    const data = await r.json();
+    const notice = document.getElementById("stale-page");
+    if (notice && data.version && data.version !== window.KEYBOT_VERSION) {
+      notice.hidden = false;
+    }
+  } catch (e) {
+    // Offline or restarting. Not worth saying anything about.
+  }
+}
+
 async function pollStatus() {
   let status;
   try {
@@ -1862,7 +1881,11 @@ function escapeAttr(str) {
 // Boot
 // -----
 
+bindEvent("stale-page-reload", "click", () => location.reload(true));
+
 (async function init() {
+  checkPageVersion();
+  setInterval(checkPageVersion, 60000);
   // The panel is live from the moment the page opens to the moment it
   // closes, whether or not this tab is the one that started the run. A
   // page opened at 3am on a run that started at 10pm shows that run.

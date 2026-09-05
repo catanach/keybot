@@ -105,10 +105,44 @@ async def deploy_code(files: dict) -> None:
     files and restarts itself to pick them up -- only call this once
     you've confirmed nothing is running."""
     url = f"{settings.get_device_url()}/deploy_code"
-    try:
-        async with _device_lock, httpx.AsyncClient(timeout=DEPLOY_TIMEOUT) as client:
-            resp = await client.post(url, json=files)
-    except httpx.RequestError as e:
-        raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
-    if resp.status_code != 200:
-        raise DeviceError(f"device rejected the deploy: {resp.text}")
+    # One file per request. Sending both at once meant the board had to hold
+    # and parse a single ~19KB JSON body, and it ran out of memory doing it:
+    # "MemoryError: memory allocation failed, allocating 19075 bytes". The
+    # board restarts after each file, so the caller must send them in an
+    # order where a half-updated board still boots -- see DEPLOY_FILES.
+    for name, content in files.items():
+        try:
+            async with _device_lock, httpx.AsyncClient(timeout=DEPLOY_TIMEOUT) as client:
+                resp = await client.post(url, json={name: content})
+        except httpx.RequestError as e:
+            # The board resets as soon as it has written the file, so the
+            # reply is often cut off. That is success, not failure.
+            if _looks_like_a_restart(e):
+                await _wait_for_device_back()
+                continue
+            raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
+        if resp.status_code != 200:
+            raise DeviceError(f"device rejected the deploy: {resp.text}")
+        await _wait_for_device_back()
+
+
+def _looks_like_a_restart(e) -> bool:
+    text = str(e).lower()
+    return "disconnected" in text or "incomplete" in text or "peer closed" in text
+
+
+async def _wait_for_device_back(timeout: float = 45.0) -> None:
+    """Waits for the board to answer again after it restarts itself."""
+    waited = 0.0
+    while waited < timeout:
+        await asyncio.sleep(3.0)
+        waited += 3.0
+        try:
+            await get_status()
+            return
+        except DeviceError:
+            continue
+    raise DeviceError(
+        "the Pico did not come back after a firmware file was written. "
+        "Unplug it and plug it back in, then check the Firmware panel."
+    )

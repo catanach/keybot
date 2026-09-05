@@ -9,7 +9,13 @@ import os
 from pathlib import Path
 
 FIRMWARE_DIR = Path(os.environ.get("KEYBOT_FIRMWARE_DIR", "/firmware_src"))
-DEPLOY_FILES = ["code.py", "script_runner.py"]
+# script_runner.py goes FIRST, deliberately. The files are sent one at a
+# time and the board restarts after each, so there is a moment when the two
+# do not match. Old code.py with new script_runner.py is fine, because the
+# new arguments are optional. New code.py with old script_runner.py is not:
+# it passes an argument the old one does not take, the import fails outside
+# the error handler, and the board reboot-loops with no server.
+DEPLOY_FILES = ["script_runner.py", "code.py"]
 
 
 class FirmwareError(Exception):

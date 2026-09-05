@@ -77,13 +77,14 @@ It keeps its own `dev/script.json`, separate from the one on the Pico, so testin
 
 ### Tests
 
-Four things to run, none of which needs the Pico:
+Five things to run, none of which needs the Pico:
 
 ```
 python3 -m unittest discover -s dev   # the script logic, the key list, and /press
 python3 dev/repro_lockup.py           # the device recovers from bad scripts
 node dev/test_picker.js               # the editor's key picker
 node dev/test_recording.js            # sending recorded keys to the device
+node dev/test_startup.js              # the page still works with an element missing
 ```
 
 `dev/test_picker.js` runs the editor's key picker without a browser: the real
@@ -98,6 +99,14 @@ recording: the keys going to the device as they are typed. It drives a stubbed
 device that can be made slow, unreachable, or busy, which is how the awkward
 cases -- typing faster than Wi-Fi, a board that stops answering mid-recording --
 get tested without unplugging anything.
+
+`dev/test_startup.js` loads the real `app.js` against a page that is missing an
+element it expects, and checks that the rest of the page still comes up. That
+happened for real: a browser held an `index.html` from before the "send keys as
+they are typed" checkbox existed, `app.js` threw while it was still loading, and
+everything after that line -- the status polling, the script list -- never ran.
+The page looked normal and did nothing at all. A missing control should cost
+that control and nothing else.
 
 `dev/repro_lockup.py` starts its own copy of the dev server on a spare port, feeds it the kinds of broken script the webapp can produce, and checks that the device is still answering and still usable afterwards. Every case has to print PASS.
 

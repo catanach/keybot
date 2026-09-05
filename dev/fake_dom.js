@@ -130,10 +130,18 @@ class FakeElement {
     return this.parentNode.children[this.parentNode.children.indexOf(this) + 1] || null;
   }
 
-  // Selectors: ".class", "#id", "tag". Enough for what app.js asks for.
+  // Selectors: ".class", "#id", "[attr]", '[attr="value"]', "tag". Enough
+  // for what app.js asks for.
   matches(selector) {
     if (selector.startsWith(".")) return this.classList.contains(selector.slice(1));
     if (selector.startsWith("#")) return this.id === selector.slice(1);
+    if (selector.startsWith("[")) {
+      const parts = selector.match(/^\[([a-zA-Z-]+)(?:=["']?([^\]"']*)["']?)?\]$/);
+      if (!parts) return false;
+      const value = this.getAttribute(parts[1]);
+      if (value === undefined) return false;
+      return parts[2] === undefined || value === parts[2];
+    }
     return this.tagName === selector.toUpperCase();
   }
   querySelectorAll(selector) {
@@ -220,12 +228,23 @@ function parseFragment(html) {
 // --- document -----------------------------------------------------------
 const elementsById = new Map();
 
+// Ids the page does not have. getElementById makes an element for any id it
+// is asked for, which is what most tests want; a test about a page whose
+// HTML is older than app.js needs the other answer, so ids listed here come
+// back null the way a real browser answers for an element that isn't there.
+const missingIds = new Set();
+
 const document = {
   isDocument: true,
   _listeners: { capture: {}, bubble: {} },
   body: new FakeElement("body"),
   createElement: (tag) => new FakeElement(tag),
   getElementById(id) {
+    if (missingIds.has(id)) return null;
+    // An element the page built and attached wins: app.js creates elements,
+    // gives them an id, and later looks them up by that id.
+    const inPage = this.body.querySelector("#" + id);
+    if (inPage) return inPage;
     if (!elementsById.has(id)) {
       const el = new FakeElement("div");
       el.id = id;
@@ -241,4 +260,4 @@ const document = {
   dispatchEvent: FakeElement.prototype.dispatchEvent,
 };
 
-module.exports = { FakeElement, FakeEvent, ClassList, document, parseFragment, elementsById };
+module.exports = { FakeElement, FakeEvent, ClassList, document, parseFragment, elementsById, missingIds };

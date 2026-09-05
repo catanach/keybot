@@ -89,6 +89,40 @@ async function fetchJson(url, method, body) {
   return data;
 }
 
+// -----
+// Looking elements up
+//
+// This file wires its controls when it loads. A page whose HTML is older
+// than this file -- a browser holding a cached index.html, which has
+// happened -- can be missing one of them, and a missing element used to
+// stop the whole file dead on the line that touched it: no status polling,
+// no script list, a page that drew itself and then did nothing.
+//
+// So every control is looked up through one of these two. A control that
+// isn't on the page costs that one control and says so on the console.
+// Nothing else here catches errors: a real bug should still throw.
+// -----
+
+function elementOrWarn(id) {
+  const el = document.getElementById(id);
+  if (!el) {
+    console.warn(
+      `keybot: this page has no element with id "${id}", so that control does ` +
+      `nothing. The page may be older than the app -- reload it, and if that ` +
+      `doesn't help the page and the app have got out of step.`
+    );
+    return null;
+  }
+  return el;
+}
+
+function bindEvent(id, type, handler) {
+  const el = elementOrWarn(id);
+  if (!el) return null;
+  el.addEventListener(type, handler);
+  return el;
+}
+
 const main = document.getElementById("main");
 let allScripts = [];
 let lastRunScriptId = localStorage.getItem("lastRunScriptId") || null;
@@ -111,7 +145,7 @@ document.addEventListener("keydown", (e) => {
   if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
     e.preventDefault();
     const btn = document.getElementById("run-start-btn");
-    btn.click();
+    if (btn) btn.click();
   }
   // Cmd/Ctrl + S: save script or save recording
   if ((e.metaKey || e.ctrlKey) && e.key === "s") {
@@ -225,14 +259,22 @@ async function loadLivePressSupport() {
   } catch {
     livePressSupported = true;
   }
-  recordingLiveRow.hidden = !livePressSupported;
+  // No switch on the page means no live sending, so the row that would
+  // hold it has nothing to show either.
+  if (recordingLiveRow) {
+    recordingLiveRow.hidden = !livePressSupported || !recordingLiveToggle;
+  }
 }
 
 function liveSendWanted() {
+  // Without the switch there is no way to ask for live sending and no way
+  // to turn it off again, so it stays off.
+  if (!recordingLiveToggle) return false;
   return livePressSupported && recordingLiveToggle.checked === true;
 }
 
 function setLiveProblem(text) {
+  if (!recordingLiveProblem) return;
   recordingLiveProblem.textContent = text;
   recordingLiveProblem.style.display = text ? "block" : "none";
 }
@@ -292,7 +334,7 @@ function resetLiveSend() {
   setLiveProblem("");
 }
 
-recordingToggleBtn.addEventListener("click", async () => {
+bindEvent("recording-toggle-btn", "click", async () => {
   if (recordingState.isRecording) {
     stopRecording();
   } else {
@@ -300,15 +342,15 @@ recordingToggleBtn.addEventListener("click", async () => {
   }
 });
 
-recordingSaveBtn.addEventListener("click", async () => {
+bindEvent("recording-save-btn", "click", async () => {
   await saveRecordedScript();
 });
 
-recordingCancelBtn.addEventListener("click", () => {
+bindEvent("recording-cancel-btn", "click", () => {
   resetRecording();
 });
 
-recordingLiveToggle.addEventListener("change", () => {
+bindEvent("recording-live", "change", () => {
   // Turning it off mid-recording stops the keys already waiting, not just
   // the ones still to come.
   if (!liveSendWanted()) liveSend.queue = [];
@@ -1276,7 +1318,7 @@ async function renderHistory() {
   }
 }
 
-document.getElementById("history-btn").onclick = () => renderHistory();
+bindEvent("history-btn", "click", () => renderHistory());
 
 // -----
 // The status panel
@@ -1431,7 +1473,7 @@ function setPanelLine(id, text) {
   el.style.display = text ? "block" : "none";
 }
 
-document.getElementById("host-writes-btn").onclick = async () => {
+bindEvent("host-writes-btn", "click", async () => {
   const btn = document.getElementById("host-writes-btn");
   const out = document.getElementById("host-writes-status");
   if (!confirm("Hand the Pico's drive back to this Mac?\n\nYou'll be able to drag files onto CIRCUITPY again, but deploying firmware from this page will stop working until you give it back.")) {
@@ -1453,7 +1495,7 @@ document.getElementById("host-writes-btn").onclick = async () => {
   } finally {
     btn.disabled = false;
   }
-};
+});
 
 function renderPanel() {
   const status = panel.lastStatus;
@@ -1627,7 +1669,7 @@ async function pollStatus() {
 // Run controls
 // -----
 
-document.getElementById("run-start-btn").onclick = async () => {
+bindEvent("run-start-btn", "click", async () => {
   const errBox = document.getElementById("run-error");
   errBox.textContent = "";
   const scriptId = document.getElementById("run-script-select").value;
@@ -1680,9 +1722,9 @@ document.getElementById("run-start-btn").onclick = async () => {
   }
 
   await pollStatus();
-};
+});
 
-document.getElementById("run-stop-btn").onclick = async () => {
+bindEvent("run-stop-btn", "click", async () => {
   const errBox = document.getElementById("run-error");
   errBox.textContent = "";
   // The countdown was an estimate for a run that is ending now.
@@ -1706,7 +1748,7 @@ document.getElementById("run-stop-btn").onclick = async () => {
     errBox.textContent = e.message;
   }
   await pollStatus();
-};
+});
 
 function updateLocalCountdownDisplay() {
   const etaEl = document.getElementById("st-eta");
@@ -1758,16 +1800,17 @@ function stopLocalCountdown() {
   document.getElementById("st-eta").textContent = "-";
 }
 
-document.getElementById("device-url-save").onclick = async () => {
+bindEvent("device-url-save", "click", async () => {
   const url = document.getElementById("device-url").value.trim();
   if (!url) return;
   await api.setSettings({ device_url: url });
   pollStatus();
-};
+});
 
 async function loadSettings() {
   const s = await api.getSettings();
-  document.getElementById("device-url").value = s.device_url;
+  const box = elementOrWarn("device-url");
+  if (box) box.value = s.device_url;
 }
 
 // -----
@@ -1778,7 +1821,7 @@ const deployBtn = document.getElementById("deploy-btn");
 const deployStatusBox = document.getElementById("deploy-status");
 let deployPollTimer = null;
 
-deployBtn.onclick = async () => {
+bindEvent("deploy-btn", "click", async () => {
   deployBtn.disabled = true;
   deployStatusBox.className = "hint";
   deployStatusBox.textContent = "Starting deploy...";
@@ -1793,7 +1836,7 @@ deployBtn.onclick = async () => {
   if (deployPollTimer) clearInterval(deployPollTimer);
   deployPollTimer = setInterval(pollDeployStatus, 1200);
   pollDeployStatus();
-};
+});
 
 async function pollDeployStatus() {
   let s;
@@ -1859,10 +1902,14 @@ function escapeAttr(str) {
   // No Cmd+R hint: that binding was removed because it swallowed the
   // browser's refresh. Advertising a shortcut that does not exist costs
   // more trust than the shortcut was worth.
-  document.getElementById("run-start-btn").title = `${cmdKey}+Enter: Run script`;
+  // A plain lookup: if this button is missing, wiring it up above has
+  // already said so, and saying it twice helps nobody.
+  const startBtn = document.getElementById("run-start-btn");
+  if (startBtn) startBtn.title = `${cmdKey}+Enter: Run script`;
 
   // Display keyboard hints in sidebar if desired
-  const sidebar = document.getElementById("sidebar");
+  const sidebar = elementOrWarn("sidebar");
+  if (!sidebar) return;
   const shortcutsHint = document.createElement("div");
   shortcutsHint.style.cssText = "font-size: 11px; color: var(--muted); padding: 10px; border-top: 1px solid var(--border); margin-top: auto; text-align: center;";
   shortcutsHint.textContent = `Shortcuts: ${cmdKey}+⏎ run • ${cmdKey}+S save`;

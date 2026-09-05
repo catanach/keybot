@@ -75,19 +75,27 @@ It keeps its own `dev/script.json`, separate from the one on the Pico, so testin
 
 ### Tests
 
-Two things to run, neither of which needs the Pico:
+Three things to run, none of which needs the Pico:
 
 ```
-python3 -m unittest discover -s dev   # the script-running logic
+python3 -m unittest discover -s dev   # the script-running logic, and the key list
 python3 dev/repro_lockup.py           # the device recovers from bad scripts
+node dev/test_picker.js               # the editor's key picker
 ```
+
+`dev/test_picker.js` runs the editor's key picker without a browser: the real
+`app.js`, the real step-row markup from the real page, and the real payload
+`/api/keycodes` sends, driven through a small stand-in for a browser in
+`dev/fake_dom.js`. It exists because the picker once shipped looking correct
+in the code and completely broken on the page, and nothing here could tell
+the difference.
 
 `dev/repro_lockup.py` starts its own copy of the dev server on a spare port, feeds it the kinds of broken script the webapp can produce, and checks that the device is still answering and still usable afterwards. Every case has to print PASS.
 
 The webapp has its own tests, which need pytest (a development tool -- it is deliberately kept out of `webapp/requirements.txt` so it never ships inside the container image):
 
 ```
-python3 -m pytest webapp/tests   # the run history
+python3 -m pytest webapp/tests   # the run history, the key list, and how the page is served
 ```
 
 ## Management webapp

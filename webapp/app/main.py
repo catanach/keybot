@@ -7,7 +7,7 @@ from typing import Optional
 from pydantic import BaseModel, ValidationError
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import FileResponse, JSONResponse
+from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
@@ -16,8 +16,32 @@ from . import storage, flatten, device, settings, firmware, history, keycodes
 APP_DIR = Path(__file__).parent
 
 
+# Browsers are allowed to keep a copy of the stylesheet and the JavaScript,
+# and nothing here says for how long, so they guess -- which is how a page
+# can end up new while its JavaScript is months old. That looks exactly like
+# a new feature being broken, and it is why the key picker appeared not to
+# work at all. Two things prevent it: the page itself is always checked with
+# the server, and each asset's URL carries the time that asset last changed,
+# so a changed file is a new URL and an old copy can never answer for it.
+NO_CACHE = {"Cache-Control": "no-cache"}
+VERSIONED_ASSETS = ("app.js", "style.css")
+
+
+def stamp_asset_versions(html: str) -> str:
+    for name in VERSIONED_ASSETS:
+        try:
+            changed_at = int((APP_DIR / "static" / name).stat().st_mtime)
+        except OSError:
+            # Serving the page without the stamp is better than not serving
+            # it. The worst case is the caching this exists to avoid.
+            continue
+        html = html.replace(f"/static/{name}", f"/static/{name}?v={changed_at}")
+    return html
+
+
 async def index(request: Request):
-    return FileResponse(APP_DIR / "templates" / "index.html")
+    html = (APP_DIR / "templates" / "index.html").read_text()
+    return HTMLResponse(stamp_asset_versions(html), headers=NO_CACHE)
 
 
 # ---------------------------------------------------------------------------

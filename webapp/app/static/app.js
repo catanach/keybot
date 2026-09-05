@@ -53,9 +53,6 @@ const api = {
   async getHistory() {
     return (await fetch("/api/history")).json();
   },
-  async listKeycodes() {
-    return (await fetch("/api/keycodes")).json();
-  },
   async getSettings() {
     return (await fetch("/api/settings")).json();
   },
@@ -287,9 +284,14 @@ function recorderKeycodeNames() {
   return names;
 }
 
+// Returns whether the list arrived. It can fail for an ordinary reason --
+// the webapp restarts on every deploy, and a page open at that moment gets
+// a 502 -- so nothing here is allowed to leave the picker quietly dead.
 async function loadKeycodes() {
   try {
-    const data = await api.listKeycodes();
+    const response = await fetch("/api/keycodes");
+    if (!response.ok) throw new Error(`the server answered ${response.status}`);
+    const data = await response.json();
     keyGroups = data.groups || [];
   } catch (e) {
     keyGroups = [];
@@ -299,7 +301,7 @@ async function loadKeycodes() {
   for (const group of keyGroups) {
     for (const key of group.keys) keysByName.set(key.name, key);
   }
-  if (keysByName.size === 0) return;
+  if (keysByName.size === 0) return false;
 
   const unknown = [...recorderKeycodeNames()].filter(name => !keysByName.has(name));
   if (unknown.length > 0) {
@@ -310,6 +312,7 @@ async function loadKeycodes() {
       "in app.js, or add the names to src/keycodes.py."
     );
   }
+  return true;
 }
 
 function recordKeystroke(event) {
@@ -617,17 +620,14 @@ async function renderEditor(scriptId) {
   `;
   main.appendChild(editor);
 
-  if (keysByName.size === 0) {
-    // Without the list nothing can be picked, and every press row would look
-    // broken. Say why, instead of letting it look like the script is at fault.
-    const warning = document.createElement("div");
-    warning.className = "preview-box error";
-    warning.textContent =
-      "The list of keys didn't load, so keys can't be picked or checked. Reload the page.";
-    editor.insertBefore(warning, editor.querySelector("#steps-list"));
-  }
-
   const stepsList = editor.querySelector("#steps-list");
+
+  // The list is fetched when the page opens, but the webapp restarts on
+  // every firmware deploy and a page open at that moment gets nothing. Try
+  // again on the way into the editor, which is the only screen that needs it.
+  if (keysByName.size === 0) await loadKeycodes();
+  if (keysByName.size === 0) showKeyListWarning(editor, stepsList);
+
   for (const step of script.steps) {
     stepsList.appendChild(buildStepRow(step, script.id));
   }
@@ -643,6 +643,10 @@ async function renderEditor(scriptId) {
     const name = editor.querySelector("#f-name").value.trim();
     if (!name) {
       alert("Give the script a name.");
+      return;
+    }
+    if (keysByName.size === 0) {
+      alert("The list of keys hasn't loaded, so nothing can be saved yet. Use Try again above.");
       return;
     }
     const { steps, unresolved } = readSteps(stepsList);
@@ -671,6 +675,44 @@ async function renderEditor(scriptId) {
   if (!isNew) {
     await showPreview(script.id, editor.querySelector("#preview-box"));
   }
+}
+
+// Shown when the key list could not be fetched. Without it no key can be
+// picked or checked, so it says so once, at the top, and offers the way out
+// rather than making someone reload and lose what they were editing.
+function showKeyListWarning(editor, stepsList) {
+  const warning = document.createElement("div");
+  warning.className = "preview-box error";
+  warning.id = "key-list-warning";
+  const message = document.createElement("span");
+  message.textContent = "The list of keys didn't load, so keys can't be picked or checked. ";
+  const retry = document.createElement("button");
+  retry.type = "button";
+  retry.className = "btn small";
+  retry.id = "retry-keycodes";
+  retry.textContent = "Try again";
+  retry.onclick = async () => {
+    retry.disabled = true;
+    retry.textContent = "Trying...";
+    const loaded = await loadKeycodes();
+    retry.disabled = false;
+    retry.textContent = "Try again";
+    if (!loaded) {
+      message.textContent = "Still no list of keys. Is the webapp still running? ";
+      return;
+    }
+    warning.remove();
+    // Every press row is showing its key as plain text. Now that the list is
+    // here, build the pickers again from what each row already holds.
+    for (const row of stepsList.children) {
+      if (row.dataset.kind === "press") {
+        setUpKeyPicker(row, row.querySelector(".step-key-search").value.trim());
+      }
+    }
+  };
+  warning.appendChild(message);
+  warning.appendChild(retry);
+  editor.insertBefore(warning, stepsList);
 }
 
 async function showPreview(scriptId, box) {
@@ -723,7 +765,10 @@ function setUpKeyPicker(node, initialName) {
     } else if (name) {
       hidden.value = "";
       search.value = name;
-      showError(`There is no key called '${name}'. Pick a key.`);
+      // With no list loaded, nothing is known about this key either way.
+      // The message above the steps explains that; calling every key wrong
+      // would be a lie.
+      showError(keysByName.size === 0 ? "" : `There is no key called '${name}'. Pick a key.`);
     } else {
       hidden.value = "";
       search.value = "";

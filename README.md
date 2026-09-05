@@ -4,12 +4,14 @@ Files and a deploy script for the Raspberry Pi Pico WH keyboard-emulation projec
 
 ## Folder layout
 
-- `src/` — the actual code that runs on the Pico (`code.py`, `script_runner.py`), plus a `settings.toml.example` template for your Wi-Fi credentials.
+- `src/` — the actual code that runs on the Pico (`code.py`, `script_runner.py`, `keycodes.py`), plus a `settings.toml.example` template for your Wi-Fi credentials.
 - `dev/` — a local stand-in for the Pico's server, for testing scripts on your Mac without the hardware. See "Developing without the Pico" below.
 - `lib/` — put the CircuitPython firmware `.uf2` file here, along with the `adafruit_hid` and `adafruit_httpserver` library folders. `deploy.sh` reads from this folder.
 - `deploy.sh` — copies everything onto the Pico. Safe to run more than once.
 
 `script_runner.py` holds the actual "run the script, track progress, handle stop/times" logic, and both `src/code.py` (on the Pico) and `dev/server.py` (on your Mac) use it the same way. Only the key-press action itself differs between the two.
+
+`keycodes.py` is the one list of key names, as `(NAME, label)` pairs. The dev server checks against it, the webapp serves it to the editor's key picker at `/api/keycodes`, and the board checks it against the real `adafruit_hid` library when it boots and reports a fault if the two have drifted apart. Adding a key means adding it there and nowhere else.
 
 ## One-time setup of this folder
 
@@ -29,7 +31,7 @@ Files and a deploy script for the Raspberry Pi Pico WH keyboard-emulation projec
    ./deploy.sh
    ```
    This flashes the CircuitPython firmware. Wait for the board to restart and show up as "CIRCUITPY" in Finder.
-3. Run `./deploy.sh` again. This time it copies `code.py`, `script_runner.py`, `settings.toml`, and the two library folders onto the board.
+3. Run `./deploy.sh` again. This time it copies `code.py`, `script_runner.py`, `keycodes.py`, `settings.toml`, and the two library folders onto the board.
 
 ## Deploying updates later
 
@@ -110,7 +112,7 @@ Your scripts are saved as JSON files under `webapp/data/scripts/` (created autom
 ### What it does
 
 - Create, edit, copy, and delete scripts, each with a name and an optional description.
-- A script's steps are either `Press` (a keycode and hold time), `Wait` (seconds), or `Run script` (another script and how many times to repeat it inline).
+- A script's steps are either `Press` (a key and hold time), `Wait` (seconds), or `Run script` (another script and how many times to repeat it inline). The key is chosen from a searchable list of the keys the device actually has -- type `up` for the up arrow or `8` for the digit, or click "Press a key" and press it. A script saved before this list existed that names a key the device does not have is flagged in place, and cannot be saved again until a real key is picked.
 - The "Run script" step type is how you compose scripts: a script that runs Script A once, then Script B 10 times, then Script C once is just three "Run script" steps. When you start that composed script, the webapp resolves all the references into one flat sequence before sending it to the device, so the Pico itself doesn't need to know anything about the composition. That flattened sequence is capped at 2,000 steps and checked for circular references (A running B running A), so a mistake there is caught immediately with a clear error instead of hanging the device.
 - A persistent panel on the right lets you pick a script, optionally give it a repeat count, and hit Start or Stop. While something is running it shows the loop count, current step, and an estimated time remaining, refreshed automatically. The panel keeps checking the device from the moment the page loads until it closes, so opening it partway through an overnight run shows that run -- it does not have to be the page that started it.
 - The History view lists the last 50 runs: which script, how it ended (finished, you stopped it, failed, lost contact, or "stop requested, unconfirmed" -- we asked it to stop and then lost the board before it said it had), how many loops it got through, and why it stopped if something went wrong. The webapp watches the device itself every 5 seconds, so a run is recorded whether or not a browser is open -- including one that ends overnight. History lives in `webapp/data/history.json`.
@@ -146,7 +148,7 @@ The other scripts in `webapp/` are not for running by hand:
 
 From the next restart after `boot.py` is installed, the board owns its own
 filesystem. That is what makes the Deploy button in the webapp work: the Pico
-can rewrite its own `code.py` and `script_runner.py` over WiFi. Before this,
+can rewrite its own `code.py`, `script_runner.py` and `keycodes.py` over WiFi. Before this,
 it could not, and every deploy failed with "Read-only filesystem".
 
 The trade is that CIRCUITPY is read-only on the Mac while this is active, so

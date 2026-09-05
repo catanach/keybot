@@ -646,6 +646,89 @@ textarea {
   grid-column: 1;
 }
 
+/* The key picker: a search box, a capture button, and the list of keys that
+   drops down under them. */
+
+.step-key-picker {
+  position: relative;
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.step-key-search {
+  flex: 1;
+  min-width: 0;
+}
+
+.step-key-capture {
+  white-space: nowrap;
+}
+
+.step-key-capture.capturing {
+  background: var(--accent);
+  color: white;
+}
+
+.step-key-options {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  margin-top: 4px;
+  max-height: 240px;
+  overflow-y: auto;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.key-option-group {
+  padding: 6px 10px 2px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.key-option {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  color: var(--text);
+  padding: 6px 10px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.key-option:hover {
+  background: var(--panel-secondary);
+}
+
+.key-option-empty {
+  padding: 8px 10px;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.step-key-error {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--danger);
+}
+
+.step-key-error:empty {
+  display: none;
+}
+
+.step-invalid .step-key-search {
+  border-color: var(--danger);
+}
+
 /* Buttons */
 
 .btn {

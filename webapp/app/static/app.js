@@ -53,6 +53,9 @@ const api = {
   async getHistory() {
     return (await fetch("/api/history")).json();
   },
+  async listKeycodes() {
+    return (await fetch("/api/keycodes")).json();
+  },
   async getSettings() {
     return (await fetch("/api/settings")).json();
   },
@@ -89,6 +92,12 @@ let lastRunScriptId = localStorage.getItem("lastRunScriptId") || null;
 let isEditingScript = false;
 let favorites = new Set(JSON.parse(localStorage.getItem("favorites") || "[]"));
 let recentScriptIds = JSON.parse(localStorage.getItem("recentScriptIds") || "[]"); // Track up to 5 recent scripts
+
+// The key names the device understands, fetched once from /api/keycodes,
+// which reads the same src/keycodes.py the Pico runs. Nothing here keeps
+// its own copy of the names -- copies are how they drifted apart before.
+let keyGroups = [];
+let keysByName = new Map();
 
 // Keyboard shortcuts setup
 document.addEventListener("keydown", (e) => {
@@ -261,6 +270,46 @@ function toKeycodeName(event) {
   const key = event.key || "";
   if (/^[a-zA-Z]$/.test(key)) return key.toUpperCase();
   return null;
+}
+
+// Everything toKeycodeName can return. If any of it is not a key the
+// device has, a recording using that key fails on the hardware -- which is
+// the bug that started all of this, so it is checked on every page load
+// rather than left to be noticed on the PS5.
+function recorderKeycodeNames() {
+  const names = new Set(Object.values(RECORDER_CODE_MAP));
+  for (const letter of "ABCDEFGHIJKLMNOPQRSTUVWXYZ") names.add(letter);
+  for (const digit of DIGIT_NAMES) {
+    names.add(digit);
+    names.add("KEYPAD_" + digit);
+  }
+  for (let i = 1; i <= 24; i++) names.add("F" + i);
+  return names;
+}
+
+async function loadKeycodes() {
+  try {
+    const data = await api.listKeycodes();
+    keyGroups = data.groups || [];
+  } catch (e) {
+    keyGroups = [];
+    console.error("keybot: couldn't load the key list from the server: " + e.message);
+  }
+  keysByName = new Map();
+  for (const group of keyGroups) {
+    for (const key of group.keys) keysByName.set(key.name, key);
+  }
+  if (keysByName.size === 0) return;
+
+  const unknown = [...recorderKeycodeNames()].filter(name => !keysByName.has(name));
+  if (unknown.length > 0) {
+    console.error(
+      "keybot: the recorder can produce key names the device does not have: " +
+      unknown.join(", ") +
+      ". Recording one of those keys would fail on the Pico. Fix RECORDER_CODE_MAP " +
+      "in app.js, or add the names to src/keycodes.py."
+    );
+  }
 }
 
 function recordKeystroke(event) {
@@ -568,6 +617,16 @@ async function renderEditor(scriptId) {
   `;
   main.appendChild(editor);
 
+  if (keysByName.size === 0) {
+    // Without the list nothing can be picked, and every press row would look
+    // broken. Say why, instead of letting it look like the script is at fault.
+    const warning = document.createElement("div");
+    warning.className = "preview-box error";
+    warning.textContent =
+      "The list of keys didn't load, so keys can't be picked or checked. Reload the page.";
+    editor.insertBefore(warning, editor.querySelector("#steps-list"));
+  }
+
   const stepsList = editor.querySelector("#steps-list");
   for (const step of script.steps) {
     stepsList.appendChild(buildStepRow(step, script.id));
@@ -586,7 +645,11 @@ async function renderEditor(scriptId) {
       alert("Give the script a name.");
       return;
     }
-    const steps = readSteps(stepsList);
+    const { steps, unresolved } = readSteps(stepsList);
+    if (unresolved) {
+      alert("One step still needs a key.");
+      return;
+    }
     const data = { name, description: editor.querySelector("#f-desc").value, steps };
     try {
       let saved;
@@ -626,13 +689,196 @@ async function showPreview(scriptId, box) {
   }
 }
 
+// How a key reads in the picker: the everyday name first, then the name
+// the device uses, e.g. "8 (EIGHT)". Letters read the same either way, so
+// they are not shown twice.
+function keyDisplay(key) {
+  return key.label === key.name ? key.name : `${key.label} (${key.name})`;
+}
+
+// Turns a press row into a searchable key picker. What gets saved is always
+// a name from the shared list: a row showing anything else counts as
+// unresolved, and readSteps refuses to save it.
+function setUpKeyPicker(node, initialName) {
+  const hidden = node.querySelector(".step-key");
+  const search = node.querySelector(".step-key-search");
+  const options = node.querySelector(".step-key-options");
+  const errorBox = node.querySelector(".step-key-error");
+  const captureBtn = node.querySelector(".step-key-capture");
+  let cancelCapture = null;
+
+  function showError(text) {
+    errorBox.textContent = text;
+    node.classList.toggle("step-invalid", Boolean(text));
+  }
+
+  // Shows a key, or shows what was there before and says it is not a key.
+  // A name saved by an older version is flagged, never quietly replaced.
+  function setKey(name) {
+    const key = keysByName.get(name);
+    if (key) {
+      hidden.value = key.name;
+      search.value = keyDisplay(key);
+      showError("");
+    } else if (name) {
+      hidden.value = "";
+      search.value = name;
+      showError(`There is no key called '${name}'. Pick a key.`);
+    } else {
+      hidden.value = "";
+      search.value = "";
+      showError("");
+    }
+  }
+
+  function hideOptions() {
+    options.hidden = true;
+  }
+
+  function matches(query) {
+    const q = query.trim().toLowerCase();
+    const found = [];
+    for (const group of keyGroups) {
+      // Both halves are searched, so "up" finds UP_ARROW and "8" finds EIGHT.
+      const keys = group.keys.filter(
+        key => !q || key.name.toLowerCase().includes(q) || key.label.toLowerCase().includes(q)
+      );
+      if (keys.length > 0) found.push({ name: group.name, keys });
+    }
+    return found;
+  }
+
+  function showOptions(query) {
+    options.innerHTML = "";
+    const groups = matches(query);
+    if (groups.length === 0) {
+      const empty = document.createElement("div");
+      empty.className = "key-option-empty";
+      empty.textContent = "No key matches that.";
+      options.appendChild(empty);
+    }
+    for (const group of groups) {
+      const heading = document.createElement("div");
+      heading.className = "key-option-group";
+      heading.textContent = group.name;
+      options.appendChild(heading);
+      for (const key of group.keys) {
+        const option = document.createElement("button");
+        option.type = "button";
+        option.className = "key-option";
+        option.textContent = keyDisplay(key);
+        // mousedown, not click: the search box's blur would otherwise land
+        // first and close the list out from under the pointer.
+        option.onmousedown = (e) => {
+          e.preventDefault();
+          setKey(key.name);
+          hideOptions();
+        };
+        options.appendChild(option);
+      }
+    }
+    options.hidden = false;
+  }
+
+  // What someone typed, turned back into a key: the whole "8 (EIGHT)", the
+  // name on its own, or the everyday label all count.
+  function resolveTyped(text) {
+    const wanted = text.trim().toLowerCase();
+    if (!wanted) return "";
+    for (const group of keyGroups) {
+      for (const key of group.keys) {
+        if (
+          key.name.toLowerCase() === wanted ||
+          key.label.toLowerCase() === wanted ||
+          keyDisplay(key).toLowerCase() === wanted
+        ) {
+          return key.name;
+        }
+      }
+    }
+    return null;
+  }
+
+  search.onfocus = () => showOptions("");
+  search.oninput = () => {
+    hidden.value = "";
+    showError("");
+    showOptions(search.value);
+  };
+  search.onblur = () => {
+    hideOptions();
+    const resolved = resolveTyped(search.value);
+    if (resolved === null) {
+      hidden.value = "";
+      showError(`There is no key called '${search.value.trim()}'. Pick a key.`);
+    } else {
+      setKey(resolved);
+    }
+  };
+  search.onkeydown = (e) => {
+    if (e.key === "Escape") {
+      hideOptions();
+      return;
+    }
+    if (e.key === "Enter") {
+      // Enter takes the first key in the list, which is the one the person
+      // typing is looking at.
+      e.preventDefault();
+      const groups = matches(search.value);
+      if (groups.length > 0) {
+        setKey(groups[0].keys[0].name);
+        hideOptions();
+      }
+    }
+  };
+
+  captureBtn.onclick = () => {
+    if (cancelCapture) {
+      cancelCapture();
+      return;
+    }
+    const onKeyDown = (event) => {
+      // The row can be removed, or changed to a Wait, while this is
+      // listening. Stop listening rather than swallowing someone's keypress
+      // on behalf of a row that is no longer on the page.
+      if (!node.isConnected) {
+        cancelCapture();
+        return;
+      }
+      // A modifier held on its own is not the key being captured; keep
+      // waiting for the one that follows it.
+      if (["Meta", "Control", "Alt", "Shift", "CapsLock"].includes(event.key)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const name = toKeycodeName(event);
+      cancelCapture();
+      if (name === null) {
+        showError(`There is no key called '${event.key}'. Pick a key.`);
+        return;
+      }
+      setKey(name);
+    };
+    cancelCapture = () => {
+      document.removeEventListener("keydown", onKeyDown, true);
+      captureBtn.textContent = "Press a key";
+      captureBtn.classList.remove("capturing");
+      cancelCapture = null;
+    };
+    captureBtn.textContent = "Press any key";
+    captureBtn.classList.add("capturing");
+    document.addEventListener("keydown", onKeyDown, true);
+  };
+
+  setKey(initialName || "");
+}
+
 function buildStepRow(step, ownScriptId) {
   const kind = step[0];
   const tpl = document.getElementById(`tpl-step-${kind}`) || document.getElementById("tpl-step-press");
   const node = tpl.content.cloneNode(true).querySelector(".step");
 
   if (kind === "press") {
-    node.querySelector(".step-key").value = step[1] || "";
+    setUpKeyPicker(node, step[1] || "");
     node.querySelector(".step-hold").value = step[2] ?? 0.1;
   } else if (kind === "wait") {
     node.querySelector(".step-seconds").value = step[1] ?? 1;
@@ -673,14 +919,22 @@ function populateScriptSelect(select, excludeId) {
   }
 }
 
+// Reads the rows back out. A press row whose key is not one the device has
+// counts as unresolved: the row keeps showing what was there, and nothing
+// is saved until someone picks a real key.
 function readSteps(stepsList) {
   const steps = [];
+  let unresolved = false;
   for (const node of stepsList.children) {
     const kind = node.dataset.kind;
     if (kind === "press") {
       const key = node.querySelector(".step-key").value.trim();
       const hold = parseFloat(node.querySelector(".step-hold").value) || 0;
-      if (key) steps.push(["press", key, hold]);
+      if (key) {
+        steps.push(["press", key, hold]);
+      } else {
+        unresolved = true;
+      }
     } else if (kind === "wait") {
       const seconds = parseFloat(node.querySelector(".step-seconds").value) || 0;
       steps.push(["wait", seconds]);
@@ -690,7 +944,7 @@ function readSteps(stepsList) {
       if (ref) steps.push(["run", ref, times]);
     }
   }
-  return steps;
+  return { steps, unresolved };
 }
 
 // -----
@@ -1407,6 +1661,7 @@ function escapeAttr(str) {
   setInterval(pollStatus, POLL_INTERVAL);
 
   initSidebarSections();
+  await loadKeycodes();
   await renderList();
   await loadSettings();
 

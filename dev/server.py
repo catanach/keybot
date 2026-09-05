@@ -29,6 +29,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
+from keycodes import KEYCODES  # noqa: E402
 from script_runner import ScriptRunner, DEFAULT_SCRIPT  # noqa: E402
 
 # Where this dev server keeps the script pushed to it. Overridable so a
@@ -37,38 +38,14 @@ SCRIPT_FILE = os.environ.get(
     "KEYBOT_DEV_SCRIPT", os.path.join(os.path.dirname(__file__), "script.json")
 )
 
-# The key names the Pico will accept, taken from the adafruit_hid Keycode
-# library in lib/. The dev server checks against this list so that a key
-# name the real board would reject fails here too, instead of only showing
-# up once the script is running on the hardware.
-KEYCODE_NAMES = frozenset(
-    list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
-    + [
-        "ZERO", "ONE", "TWO", "THREE", "FOUR",
-        "FIVE", "SIX", "SEVEN", "EIGHT", "NINE",
-        "ENTER", "RETURN", "ESCAPE", "BACKSPACE", "TAB", "SPACE", "SPACEBAR",
-        "MINUS", "EQUALS", "LEFT_BRACKET", "RIGHT_BRACKET", "BACKSLASH",
-        "POUND", "SEMICOLON", "QUOTE", "GRAVE_ACCENT", "COMMA", "PERIOD",
-        "FORWARD_SLASH", "CAPS_LOCK",
-        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11",
-        "F12", "F13", "F14", "F15", "F16", "F17", "F18", "F19", "F20",
-        "F21", "F22", "F23", "F24",
-        "PRINT_SCREEN", "SCROLL_LOCK", "PAUSE", "INSERT", "HOME", "PAGE_UP",
-        "DELETE", "END", "PAGE_DOWN",
-        "RIGHT_ARROW", "LEFT_ARROW", "DOWN_ARROW", "UP_ARROW",
-        "KEYPAD_NUMLOCK", "KEYPAD_FORWARD_SLASH", "KEYPAD_ASTERISK",
-        "KEYPAD_MINUS", "KEYPAD_PLUS", "KEYPAD_ENTER", "KEYPAD_ZERO",
-        "KEYPAD_ONE", "KEYPAD_TWO", "KEYPAD_THREE", "KEYPAD_FOUR",
-        "KEYPAD_FIVE", "KEYPAD_SIX", "KEYPAD_SEVEN", "KEYPAD_EIGHT",
-        "KEYPAD_NINE", "KEYPAD_PERIOD", "KEYPAD_BACKSLASH", "KEYPAD_EQUALS",
-        "APPLICATION", "POWER",
-        "LEFT_CONTROL", "CONTROL", "LEFT_SHIFT", "SHIFT", "LEFT_ALT", "ALT",
-        "OPTION", "LEFT_GUI", "GUI", "WINDOWS", "COMMAND",
-        "RIGHT_CONTROL", "RIGHT_SHIFT", "RIGHT_ALT", "RIGHT_GUI",
-    ]
-)
+# The key names the Pico will accept, from the one shared list in
+# src/keycodes.py -- the same file the board itself checks against the real
+# adafruit_hid library at boot. Checking here means a key name the real
+# board would reject fails on your Mac too, instead of only showing up
+# once the script is running on the hardware.
+KEYCODE_NAMES = frozenset(name for name, _label in KEYCODES)
 
-DEPLOYABLE_FILES = ("code.py", "script_runner.py")
+DEPLOYABLE_FILES = ("code.py", "script_runner.py", "keycodes.py")
 
 try:
     with open(SCRIPT_FILE, "r") as f:

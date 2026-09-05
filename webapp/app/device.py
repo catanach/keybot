@@ -100,11 +100,21 @@ async def set_host_writes(enabled: bool) -> None:
         raise DeviceError(f"device refused: {resp.text}")
 
 
-async def deploy_code(files: dict) -> None:
+async def deploy_code(files: dict) -> list:
     """Sends new firmware source to the device. The device writes the
     files and restarts itself to pick them up -- only call this once
-    you've confirmed nothing is running."""
+    you've confirmed nothing is running.
+
+    Returns the names of any files the board refused because its own copy
+    of code.py does not know about them yet. That happens when a deploy
+    introduces a new firmware file: the board checks incoming filenames
+    against the list in the code.py already running on it, so the deploy
+    that widens that list cannot also carry the new file. Skipping it here
+    means the widened code.py still lands, and a second deploy finishes the
+    job. The caller is expected to say so rather than swallow it.
+    """
     url = f"{settings.get_device_url()}/deploy_code"
+    skipped = []
     # One file per request. Sending both at once meant the board had to hold
     # and parse a single ~19KB JSON body, and it ran out of memory doing it:
     # "MemoryError: memory allocation failed, allocating 19075 bytes". The
@@ -122,8 +132,18 @@ async def deploy_code(files: dict) -> None:
                 continue
             raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
         if resp.status_code != 200:
+            if _is_unknown_file_refusal(resp):
+                skipped.append(name)
+                continue
             raise DeviceError(f"device rejected the deploy: {resp.text}")
         await _wait_for_device_back()
+    return skipped
+
+
+def _is_unknown_file_refusal(resp) -> bool:
+    """True when the board turned a file down purely because the firmware
+    running on it has never heard of that filename."""
+    return resp.status_code == 400 and "is not a file this device accepts" in resp.text
 
 
 def _looks_like_a_restart(e) -> bool:

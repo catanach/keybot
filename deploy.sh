@@ -54,7 +54,8 @@ elif [ -f "$CIRCUITPY_VOLUME/boot.py" ]; then
 fi
 cp "$SRC_DIR/code.py" "$CIRCUITPY_VOLUME/code.py"
 cp "$SRC_DIR/script_runner.py" "$CIRCUITPY_VOLUME/script_runner.py"
-echo "Copied code.py and script_runner.py."
+cp "$SRC_DIR/keycodes.py" "$CIRCUITPY_VOLUME/keycodes.py"
+echo "Copied code.py, script_runner.py and keycodes.py."
 
 # boot.py takes effect on the next power-on and makes the board's storage
 # writable to itself, which is what lets the webapp deploy firmware over

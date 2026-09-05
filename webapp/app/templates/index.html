@@ -164,11 +164,17 @@
         <option value="wait">Wait</option>
         <option value="run">Run script</option>
       </select>
-      <input class="step-key" type="text" placeholder="Keycode, e.g. ENTER">
+      <div class="step-key-picker">
+        <input class="step-key" type="hidden">
+        <input class="step-key-search" type="text" placeholder="Choose a key" autocomplete="off">
+        <button type="button" class="btn small step-key-capture">Press a key</button>
+        <div class="step-key-options" hidden></div>
+      </div>
       <input class="step-hold" type="number" step="0.1" min="0" placeholder="hold (s)">
       <button class="icon-btn step-up" title="Move up">↑</button>
       <button class="icon-btn step-down" title="Move down">↓</button>
       <button class="icon-btn step-remove" title="Remove">✕</button>
+      <div class="step-key-error"></div>
     </div>
   </template>
 

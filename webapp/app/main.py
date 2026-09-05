@@ -11,7 +11,7 @@ from starlette.responses import FileResponse, JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import storage, flatten, device, settings, firmware, history
+from . import storage, flatten, device, settings, firmware, history, keycodes
 
 APP_DIR = Path(__file__).parent
 
@@ -471,7 +471,7 @@ async def _run_deploy(files: dict):
                 return
 
         deploy_state = {"phase": "deploying", "message": "Sending new code to the Pico..."}
-        await device.deploy_code(files)
+        skipped = await device.deploy_code(files)
 
         deploy_state = {"phase": "restarting", "message": "Waiting for the Pico to come back up..."}
         came_back = False
@@ -509,11 +509,41 @@ async def _run_deploy(files: dict):
                 }
                 return
 
-        deploy_state = {"phase": "done", "message": "Deploy complete."}
+        if skipped:
+            # The board checks incoming filenames against the code.py it is
+            # already running, so a deploy that adds a firmware file cannot
+            # also carry it. The widened code.py has landed now, so the same
+            # button works the second time. Say that plainly.
+            names = ", ".join(skipped)
+            deploy_state = {
+                "phase": "done",
+                "message": (
+                    f"Deploy complete, except for {names}: the firmware that was on the "
+                    "Pico did not accept that file yet. The version just installed does. "
+                    "Click Deploy once more to finish."
+                ),
+            }
+        else:
+            deploy_state = {"phase": "done", "message": "Deploy complete."}
     except device.DeviceError as e:
         deploy_state = {"phase": "error", "message": str(e)}
     except Exception as e:  # noqa: BLE001 -- surface anything unexpected rather than hang forever
         deploy_state = {"phase": "error", "message": f"Unexpected error during deploy: {e}"}
+
+
+# ---------------------------------------------------------------------------
+# Key names
+# ---------------------------------------------------------------------------
+
+
+async def api_keycodes(request: Request):
+    """The key names the editor's picker offers, grouped for the dropdown.
+    They come from the same src/keycodes.py the Pico runs, so the picker
+    can only ever offer a key the board actually has."""
+    try:
+        return JSONResponse({"groups": keycodes.grouped()})
+    except firmware.FirmwareError as e:
+        return error(str(e), 500)
 
 
 # ---------------------------------------------------------------------------
@@ -549,6 +579,7 @@ routes = [
     Route("/api/device/deploy", api_device_deploy, methods=["POST"]),
     Route("/api/device/deploy/status", api_device_deploy_status, methods=["GET"]),
     Route("/api/history", api_history, methods=["GET"]),
+    Route("/api/keycodes", api_keycodes, methods=["GET"]),
     Route("/api/settings", api_get_settings, methods=["GET"]),
     Route("/api/settings", api_set_settings, methods=["PUT"]),
     Mount("/static", StaticFiles(directory=APP_DIR / "static"), name="static"),

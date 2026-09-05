@@ -1,4 +1,5 @@
 import os
+import sys
 import time
 import json
 import wifi
@@ -10,6 +11,14 @@ from adafruit_hid.keycode import Keycode
 from adafruit_httpserver import Server, Response
 
 from script_runner import ScriptRunner, DEFAULT_SCRIPT
+
+try:
+    from keycodes import KEYCODES
+except ImportError:
+    # This board has not been sent keycodes.py yet. Guarded because this
+    # import runs outside the error handler at the bottom: an ImportError
+    # here would leave the board with no server and no way to deploy a fix.
+    KEYCODES = None
 
 keyboard = Keyboard(usb_hid.devices)
 
@@ -62,7 +71,21 @@ except (OSError, ValueError):
 code_deploy_requested = False
 
 # The files a deploy is allowed to replace. Anything else is refused.
-DEPLOYABLE_FILES = ("code.py", "script_runner.py")
+DEPLOYABLE_FILES = ("code.py", "script_runner.py", "keycodes.py")
+
+
+if KEYCODES:
+    # Drift between the shared key list and this board's keyboard library is
+    # what made recorded arrows and digits fail mid-script. Say so at boot.
+    missing = [name for name, _label in KEYCODES if getattr(Keycode, name, None) is None]
+    if missing:
+        log_error(
+            "checking the key list",
+            ValueError("this board's keyboard library has no " + ", ".join(missing)),
+        )
+    # Checked: the board needs the memory more than it needs the names.
+    KEYCODES = None
+    sys.modules.pop("keycodes", None)
 
 
 def make_sleep_fn(server, runner):

@@ -1674,20 +1674,28 @@ function forgetStopRequest() {
   }
 }
 
-// A tab left open keeps running whatever JavaScript it loaded, however old.
-// Cache headers cannot help with that, and it has made working code look
-// broken more than once. Compare what this tab is running against what the
-// server has, and say so rather than letting it be a mystery.
+// A tab left open keeps running whatever JavaScript it loaded, however old,
+// and no cache header changes that. The version this tab is running is read
+// off the script URL it actually loaded, rather than a value baked into the
+// page: a cached page would carry a stale value and claim to be out of date
+// forever, which is exactly what happened the first time.
+function runningVersion() {
+  const tag = document.querySelector('script[src*="app.js"]');
+  if (!tag) return null;
+  const match = /[?&]v=([^&]+)/.exec(tag.getAttribute("src") || "");
+  return match ? match[1] : null;
+}
+
 async function checkPageVersion() {
-  if (!window.KEYBOT_VERSION) return;
+  const mine = runningVersion();
+  if (!mine) return;
   try {
     const r = await fetch("/api/app-version", { cache: "no-store" });
     if (!r.ok) return;
     const data = await r.json();
     const notice = document.getElementById("stale-page");
-    if (notice && data.version && data.version !== window.KEYBOT_VERSION) {
-      notice.hidden = false;
-    }
+    if (!notice || !data.version) return;
+    notice.hidden = data.version.split("-")[0] === mine;
   } catch (e) {
     // Offline or restarting. Not worth saying anything about.
   }

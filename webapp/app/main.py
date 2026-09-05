@@ -24,7 +24,11 @@ APP_DIR = Path(__file__).parent
 # work at all. Two things prevent it: the page itself is always checked with
 # the server, and each asset's URL carries the time that asset last changed,
 # so a changed file is a new URL and an old copy can never answer for it.
-NO_CACHE = {"Cache-Control": "no-cache"}
+# no-store rather than no-cache. no-cache still lets the browser reuse a
+# stored copy after a 304, and index.html's own timestamp does not change
+# when app.js does, so the page came back stale with an out-of-date version
+# baked into it and claimed to be out of date forever.
+NO_CACHE = {"Cache-Control": "no-store"}
 VERSIONED_ASSETS = ("app.js", "style.css")
 
 
@@ -62,7 +66,6 @@ def stamp_asset_versions(html: str) -> str:
 
 async def index(request: Request):
     html = (APP_DIR / "templates" / "index.html").read_text()
-    html = html.replace("</body>", f'<script>window.KEYBOT_VERSION="{app_version()}";</script></body>')
     return HTMLResponse(stamp_asset_versions(html), headers=NO_CACHE)
 
 

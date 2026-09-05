@@ -1674,33 +1674,6 @@ function forgetStopRequest() {
   }
 }
 
-// A tab left open keeps running whatever JavaScript it loaded, however old,
-// and no cache header changes that. The version this tab is running is read
-// off the script URL it actually loaded, rather than a value baked into the
-// page: a cached page would carry a stale value and claim to be out of date
-// forever, which is exactly what happened the first time.
-function runningVersion() {
-  const tag = document.querySelector('script[src*="app.js"]');
-  if (!tag) return null;
-  const match = /[?&]v=([^&]+)/.exec(tag.getAttribute("src") || "");
-  return match ? match[1] : null;
-}
-
-async function checkPageVersion() {
-  const mine = runningVersion();
-  if (!mine) return;
-  try {
-    const r = await fetch("/api/app-version", { cache: "no-store" });
-    if (!r.ok) return;
-    const data = await r.json();
-    const notice = document.getElementById("stale-page");
-    if (!notice || !data.version) return;
-    notice.hidden = data.version.split("-")[0] === mine;
-  } catch (e) {
-    // Offline or restarting. Not worth saying anything about.
-  }
-}
-
 async function pollStatus() {
   let status;
   try {
@@ -1889,11 +1862,7 @@ function escapeAttr(str) {
 // Boot
 // -----
 
-bindEvent("stale-page-reload", "click", () => location.reload(true));
-
 (async function init() {
-  checkPageVersion();
-  setInterval(checkPageVersion, 60000);
   // The panel is live from the moment the page opens to the moment it
   // closes, whether or not this tab is the one that started the run. A
   // page opened at 3am on a run that started at 10pm shows that run.

@@ -953,21 +953,3 @@ details summary {
   font-size: 12px;
   line-height: 1.45;
 }
-
-/* Shown when the server has newer assets than this tab is running. A tab left
-   open never re-fetches on its own, so it can keep running old JavaScript
-   forever and make working code look broken. */
-.stale-page {
-  position: fixed;
-  top: 0; left: 0; right: 0;
-  z-index: 1000;
-  display: flex;
-  gap: 12px;
-  align-items: center;
-  justify-content: center;
-  padding: 9px 14px;
-  background: #3a2f12;
-  border-bottom: 1px solid #6b5320;
-  color: #ffdfa3;
-  font-size: 13px;
-}

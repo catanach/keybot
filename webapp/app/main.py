@@ -1,6 +1,7 @@
 import asyncio
 import os
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -152,6 +153,30 @@ async def api_preview_script(request: Request):
 # ---------------------------------------------------------------------------
 
 
+def program_for(script_id: str, status: dict) -> list:
+    """What to send this particular board: nested repeats for firmware that
+    understands them, every step written out for firmware that doesn't."""
+    if device.supports_repeat(status):
+        return flatten.compile_script(script_id)
+    return flatten.flatten_script(script_id)
+
+
+def with_part_names(text):
+    """Puts script names into a message the device wrote. The device counts
+    parts and nothing more -- only the webapp knows what they are called."""
+    if not text:
+        return text
+    names = (settings.get_last_run() or {}).get("part_names") or []
+
+    def named(match):
+        index = int(match.group(1))
+        if 1 <= index <= len(names) and names[index - 1]:
+            return f"part {index} ({names[index - 1]})"
+        return match.group(0)
+
+    return re.sub(r"part (\d+)", named, text)
+
+
 async def api_run_script(request: Request):
     script_id = request.path_params["script_id"]
     if storage.get_script(script_id) is None:
@@ -160,32 +185,55 @@ async def api_run_script(request: Request):
     if err:
         return err
     try:
-        flat = flatten.flatten_script(script_id)
+        status = await device.get_status()
+    except device.DeviceError as e:
+        return error(str(e), 502)
+    # The device refuses a new program while a run is going, which is what
+    # keeps a run from being swapped out mid-repeat. Say so in our own words
+    # here rather than let its refusal surface as a failed push.
+    if status.get("running"):
+        return error(_already_running_message(), 409)
+    try:
+        program = program_for(script_id, status)
     except flatten.FlattenError as e:
         return error(str(e))
-    if not flat:
+    if not program:
         return error("this script has no steps to run")
     # Recorded before the device is told to start. The poller can see the run
     # within milliseconds and reads the script id from here, so setting it
     # afterwards attributed the first moments of a run to the previous script.
-    settings.set_last_run(script_id, body.times)
+    settings.set_last_run(script_id, body.times, flatten.part_names(script_id))
     # Starting a script while another is running never makes the device report
     # not-running, so the poller would keep the old record and credit this run
     # to the previous script. Close it here.
     close_open_run(history.STOPPED_BY_YOU)
     try:
-        await device.push_script(flat)
+        await device.push_script(program)
         await device.start(body.times)
+    except device.DeviceBusy:
+        return error(_already_running_message(), 409)
     except device.DeviceError as e:
         return error(str(e), 502)
-    return JSONResponse({"ok": True, "step_count": len(flat)})
+    return JSONResponse({"ok": True, "step_count": flatten.count_steps(program)})
+
+
+def _already_running_message() -> str:
+    script_id = (settings.get_last_run() or {}).get("script_id")
+    script = storage.get_script(script_id) if script_id else None
+    what = f"“{script['name']}” is" if script else "Something is"
+    return f"{what} already running on the Pico. Stop it before starting another script."
 
 
 async def api_device_status(request: Request):
     try:
-        return JSONResponse(await device.get_status())
+        status = await device.get_status()
     except device.DeviceError as e:
         return error(str(e), 502)
+    # The names for the positions the device reports as numbers, so the run
+    # panel can say "Gathering" where the board says "part 2".
+    status["part_names"] = (settings.get_last_run() or {}).get("part_names") or []
+    status["last_error"] = with_part_names(status.get("last_error"))
+    return JSONResponse(status)
 
 
 async def api_device_press(request: Request):
@@ -396,7 +444,7 @@ async def _poll_device_once() -> None:
     elif open_run["record_id"] is not None:
         # last_error has to be read here, on the poll that sees the run
         # end: the next /start wipes it off the device.
-        last_error = status.get("last_error")
+        last_error = with_part_names(status.get("last_error"))
         loops_done = status.get("loop_count", open_run["loops_done"])
         outcome = history.outcome_for(
             loops_done, status.get("target_loops"), last_error, open_run["we_stopped_it"]
@@ -501,6 +549,20 @@ async def api_device_deploy_status(request: Request):
     return JSONResponse(deploy_state)
 
 
+def _firmware_size_note() -> str:
+    """The size of each file as it goes over the wire, which is smaller than
+    the file in the repo because the comments are taken out first. That is
+    the number that matters: the board has to hold a whole request in memory
+    to receive one, and it runs out somewhere above 12KB."""
+    try:
+        return ", ".join(
+            "{} {:.1f}KB".format(name, sent / 1024)
+            for name, _in_repo, sent in firmware.firmware_sizes()
+        )
+    except firmware.FirmwareError:
+        return "sizes unknown"
+
+
 async def _run_deploy(files: dict):
     global deploy_state
     try:
@@ -539,17 +601,21 @@ async def _run_deploy(files: dict):
                 }
                 return
 
-        deploy_state = {"phase": "deploying", "message": "Sending new code to the Pico..."}
+        deploy_state = {
+            "phase": "deploying",
+            "message": "Sending new code to the Pico ({}).".format(_firmware_size_note()),
+        }
         skipped = await device.deploy_code(files)
 
         deploy_state = {"phase": "restarting", "message": "Waiting for the Pico to come back up..."}
         came_back = False
+        back_up = {}
         waited = 0
         while waited < DEPLOY_RESTART_TIMEOUT_SECONDS:
             await asyncio.sleep(DEPLOY_POLL_SECONDS)
             waited += DEPLOY_POLL_SECONDS
             try:
-                await device.get_status()
+                back_up = await device.get_status()
                 came_back = True
                 break
             except device.DeviceError:
@@ -568,8 +634,8 @@ async def _run_deploy(files: dict):
         if last_run:
             deploy_state = {"phase": "resuming", "message": "Restarting your script..."}
             try:
-                flat = flatten.flatten_script(last_run["script_id"])
-                await device.push_script(flat)
+                program = program_for(last_run["script_id"], back_up)
+                await device.push_script(program)
                 await device.start(last_run.get("times"))
             except (flatten.FlattenError, device.DeviceError) as e:
                 deploy_state = {

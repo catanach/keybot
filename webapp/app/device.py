@@ -43,6 +43,13 @@ async def get_status() -> dict:
     return resp.json()
 
 
+def supports_repeat(status: dict) -> bool:
+    """Whether the firmware on the board can repeat a nested script by
+    itself. Firmware that can says so in /status; anything older doesn't
+    mention features at all, and gets a program written out in full."""
+    return "repeat" in (status.get("features") or [])
+
+
 class DeviceBusy(DeviceError):
     """The device understood the request and turned it down because it is
     busy -- a script is running, or it is about to restart."""
@@ -95,6 +102,8 @@ async def push_script(steps: list) -> None:
             resp = await client.post(url, json=steps)
     except httpx.RequestError as e:
         raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
+    if resp.status_code == 409:
+        raise DeviceBusy(resp.text)
     if resp.status_code != 200:
         raise DeviceError(f"device rejected the script: {resp.text}")
 

@@ -43,14 +43,22 @@ def set_device_url(url: str) -> None:
 
 def get_last_run():
     """The script_id/times that were last told to run, so a firmware
-    deploy can resume the same thing afterward. None if nothing has run
-    yet, or it was cleared by a manual stop."""
+    deploy can resume the same thing afterward, and the names of that
+    run's parts, so the panel and any error can say "Gathering" where the
+    device only knows "part 2". None if nothing has run yet, or it was
+    cleared by a manual stop."""
     return _read().get("last_run")
 
 
-def set_last_run(script_id: str, times) -> None:
+def set_last_run(script_id: str, times, part_names=None) -> None:
+    """Written to disk rather than kept in memory, so a webapp restart part
+    way through a four-hour run doesn't lose the part names."""
     data = _read()
-    data["last_run"] = {"script_id": script_id, "times": times}
+    data["last_run"] = {
+        "script_id": script_id,
+        "times": times,
+        "part_names": part_names or [],
+    }
     _write(data)
 
 

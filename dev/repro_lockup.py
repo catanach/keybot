@@ -18,6 +18,13 @@ runs, so a pass here means the same thing happens on the board:
   3. a step type the device doesn't know;
   4. a request body that isn't a script at all.
 
+Since nested repeats landed, the device checks a whole program when it
+arrives rather than only when it runs, so 1, 3 and 4 are now turned down
+at the door with an explanation and never get the chance to stop a run.
+That is a better outcome than recovering from them, and it is what these
+cases now expect. Number 2 can still only be found while running: whether
+a key name exists is something only the board's keyboard library knows.
+
 Exit code is 0 only if every case recovered.
 """
 
@@ -149,8 +156,9 @@ def check_bad_script(name, bad_script):
 
 
 def check_bad_request(name, payload):
-    """Sends something that isn't a script at all. The device should say
-    no and carry on as if nothing happened."""
+    """Sends something the device should refuse outright -- a bad step, or
+    something that isn't a script at all. It should say no, in words, and
+    carry on as if nothing happened."""
     print("\n--- {} ---".format(name))
     code, body = post("/update", payload)
     print("  push           -> {} {}".format(code, body.strip()[:120]))
@@ -164,7 +172,7 @@ def main():
     proc = start_server()
     try:
         results = [
-            check_bad_script(
+            check_bad_request(
                 'malformed step: a "wait" with no duration',
                 [["press", "ENTER", 0.05], ["wait"]],
             ),
@@ -172,7 +180,7 @@ def main():
                 'key name that does not exist: "UP" instead of "UP_ARROW"',
                 [["press", "UP", 0.05]],
             ),
-            check_bad_script(
+            check_bad_request(
                 'step type the device does not know: "hold"',
                 [["hold", "ENTER", 0.05]],
             ),

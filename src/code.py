@@ -11,7 +11,12 @@ from adafruit_hid.keyboard import Keyboard
 from adafruit_hid.keycode import Keycode
 from adafruit_httpserver import Server, Response
 
-from script_runner import ScriptRunner, DEFAULT_SCRIPT
+from script_runner import (
+    ScriptRunner,
+    DEFAULT_SCRIPT,
+    program_for_saving,
+    program_from_saved,
+)
 
 try:
     from keycodes import KEYCODES
@@ -28,21 +33,20 @@ last_fault = None
 
 
 def log_error(context, error):
-    """Records an error without ever raising. Kept in memory for /status,
-    and written to a file so it survives a restart."""
+    """Records an error without ever raising: kept for /status, and written
+    to a file so it survives a restart."""
     global last_fault
     last_fault = "{}: {}: {}".format(context, type(error).__name__, error)
     try:
         with open("/error_log.txt", "w") as f:
             f.write(last_fault + "\n")
     except OSError:
-        # Read-only whenever the drive is mounted over USB. /status is
-        # enough in that case.
+        # Read-only while the drive is mounted over USB. /status will do.
         pass
 
 
 def bad_request(request, message):
-    """Turns down a request, saying what was wrong in plain words."""
+    """Turns down a request, saying what was wrong."""
     return Response(request, "error: " + message, status=(400, "Bad Request"))
 
 
@@ -54,21 +58,20 @@ def press_fn(keycode_name, hold):
     try:
         time.sleep(hold)
     finally:
-        # Even if the wait is interrupted, the key doesn't stay down.
+        # An interrupted wait must not leave the key down.
         keyboard.release(keycode)
 
 
 try:
     with open("/script.json", "r") as f:
-        SCRIPT = json.load(f)
-    if not isinstance(SCRIPT, list):
-        SCRIPT = DEFAULT_SCRIPT
+        SCRIPT = program_from_saved(json.load(f))
 except (OSError, ValueError):
-    # Missing or unreadable: use the built-in script rather than fail to boot.
+    # Missing, unreadable, or written by different firmware: use the
+    # built-in script rather than fail to boot or half-run something.
     SCRIPT = DEFAULT_SCRIPT
 
-# Set by /deploy_code once new firmware is on disk. The main loop acts on it
-# only when nothing is running, so a deploy never cuts off a script mid-step.
+# Set by /deploy_code once new firmware is on disk. The main loop acts on
+# it only when idle, so a deploy never cuts off a script mid-step.
 code_deploy_requested = False
 
 # The files a deploy is allowed to replace. Anything else is refused.
@@ -80,22 +83,25 @@ MAX_HOLD = 1.0
 
 if KEYCODES:
     # Drift between the shared key list and this board's keyboard library
-    # made recorded arrows fail mid-script. Say so at boot instead.
+    # made recorded arrows fail mid-script. Say so at boot.
     missing = [name for name, _label in KEYCODES if getattr(Keycode, name, None) is None]
     if missing:
         log_error(
             "checking the key list",
             ValueError("this board's keyboard library has no " + ", ".join(missing)),
         )
-    # Checked: the board needs the memory more than it needs the names.
+    # Checked: the board needs the memory more than the names.
     KEYCODES = None
     sys.modules.pop("keycodes", None)
 
 
 def make_sleep_fn(server, runner):
     def sleep_fn(duration):
-        end_time = time.monotonic() + duration
-        while time.monotonic() < end_time:
+        # monotonic_ns, not monotonic: monotonic is a float that loses
+        # resolution the longer the board has been up, and these runs go on
+        # for hours. Whole nanoseconds don't drift.
+        end_time = time.monotonic_ns() + int(duration * 1000000000)
+        while time.monotonic_ns() < end_time:
             server.poll()
             if runner.stop_requested:
                 return
@@ -130,8 +136,8 @@ try:
                 request, "times must be a whole number, got '{}'".format(times_param)
             )
 
-        # A fault describes the previous run and otherwise survives until
-        # reboot. Clear it, or the webapp shows it over a healthy run.
+        # A fault otherwise survives until reboot, and the webapp would
+        # show it over a healthy run.
         global last_fault
         last_fault = None
 
@@ -172,18 +178,25 @@ try:
 
     @server.route("/update", methods=["POST"])
     def update_handler(request):
+        # Refused rather than staged, so a program can never be swapped out
+        # from under a run that is part way through it.
+        if runner.running:
+            return Response(
+                request,
+                "a script is running, so it was not replaced",
+                status=(409, "Conflict"),
+            )
         try:
             new_script = request.json()
         except Exception as e:
             return bad_request(request, "invalid JSON body ({})".format(e))
-        # Swapped in place: no restart, so this cannot race a /start.
         try:
             runner.set_script(new_script)
         except ValueError as e:
             return bad_request(request, str(e))
         try:
             with open("/script.json", "w") as f:
-                json.dump(new_script, f)
+                json.dump(program_for_saving(new_script), f)
         except OSError:
             # Not fatal: the script is live in memory, just not after a
             # power cycle.
@@ -212,8 +225,7 @@ try:
                 log_error("writing " + name, e)
                 return Response(
                     request,
-                    "error: couldn't write {} ({}). The board is unchanged"
-                    " if this was the first file.".format(name, e),
+                    "error: couldn't write {} ({})".format(name, e),
                     status=(500, "Internal Server Error"),
                 )
         code_deploy_requested = True
@@ -221,14 +233,14 @@ try:
 
     @server.route("/press")
     def press_handler(request):
-        """Presses one key straight away, for the webapp's recorder, so a
-        recording is felt on the PS5 as it is typed. The press happens here
-        rather than on a queue, so "ok" means pressed and released."""
+        """Presses one key straight away, for the webapp's recorder. The
+        press happens here, not on a queue, so "ok" means pressed and
+        released."""
         conflict = None
         if runner.running:
             conflict = "a script is running, so that key was not sent"
         elif code_deploy_requested:
-            conflict = "the board is restarting for new firmware, so that key was not sent"
+            conflict = "the board is restarting, so that key was not sent"
         if conflict:
             return Response(request, conflict, status=(409, "Conflict"))
         key = request.query_params.get("key")
@@ -239,8 +251,7 @@ try:
             hold = float(hold_param)
         except ValueError:
             return bad_request(request, "hold must be a number, got '{}'".format(hold_param))
-        # Nothing else is served while a key is held down, so a long hold is
-        # a way to make the board ignore everyone.
+        # Nothing else is served while a key is held down.
         if hold < 0 or hold > MAX_HOLD:
             return bad_request(
                 request, "hold must be between 0 and {} seconds".format(MAX_HOLD)
@@ -275,9 +286,15 @@ try:
             else:
                 time.sleep(0.1)
         except Exception as e:
-            # Nothing here may end this loop -- that is what used to leave
-            # the board silent until it was unplugged. Note it and serve on.
+            # Nothing may end this loop -- that is what used to leave the
+            # board silent until it was unplugged. Note it and serve on.
             log_error("while running", e)
+            # Also recorded as the run's own ending: a MemoryError at hour
+            # three has to leave an explanation where the webapp reads one.
+            if runner.running and not runner.last_error:
+                runner.last_error = "the run stopped: {}: {}".format(
+                    type(e).__name__, e
+                )
             runner.running = False
             runner.stop_requested = False
             try:
@@ -288,7 +305,7 @@ try:
 
 except Exception as e:
     # Something outside the main loop failed -- most likely Wi-Fi or the
-    # server -- so nothing is left answering. Write it down and restart.
+    # server -- so nothing is answering. Write it down and restart.
     log_error("startup", e)
     time.sleep(5)
     supervisor.reload()

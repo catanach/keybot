@@ -904,7 +904,7 @@ async function showPreview(scriptId, box) {
     const p = await api.previewScript(scriptId);
     if (p.ok) {
       box.className = "preview-box";
-      box.textContent = `Expands to ${p.step_count} step${p.step_count === 1 ? "" : "s"}, about ${formatDuration(p.duration_seconds)} per run.`;
+      box.textContent = `${p.step_count} step${p.step_count === 1 ? "" : "s"} sent to the Pico, about ${formatDuration(p.duration_seconds)} per run.`;
     } else {
       box.className = "preview-box error";
       box.textContent = "Can't run this yet: " + p.error;
@@ -1365,14 +1365,13 @@ let panel = {
   stopUnconfirmed: false, // that request went past STOP_CONFIRM_TIMEOUT_MS
   stoppedAt: null, // {loops, target} from the poll that saw the run end
   stopTimeoutTimer: null,
-};
-
-// Local countdown timer state (client-side, deterministic timing)
-let countdownState = {
-  totalDurationMs: null,
-  startTime: null,
-  updateAnimationFrameId: null,
-  timerEl: null,
+  // The device's own estimate of the time left, and when it said it. The
+  // seconds between polls are counted off from there, so the number moves
+  // every second but is corrected by the board every poll. The page used to
+  // work the whole time out for itself from the script's length, which a
+  // nested run makes meaningless: the board is the only thing that knows
+  // which repeat it is on.
+  eta: null, // {seconds, at}
 };
 
 function refreshRunSelect() {
@@ -1434,12 +1433,54 @@ function refreshRecentScripts() {
 // The renderer
 // -----
 
+function partName(status, part) {
+  const names = status.part_names || [];
+  return names[part - 1] || null;
+}
+
 function formatLoops(status) {
+  // Inside a repeat, the iteration is the number worth watching: "A, then B
+  // a thousand times, then C" is one loop of one, and reading 0 / 1 for four
+  // hours is exactly the blindness this panel is for.
+  const position = status.position;
+  if (position && position.iterations) {
+    const count = `${position.iteration} of ${position.iterations}`;
+    const name = partName(status, position.part);
+    return name ? `${name}, ${count}` : count;
+  }
   const target =
     status.target_loops === null || status.target_loops === undefined
       ? "∞"
       : status.target_loops;
   return `${status.loop_count} / ${target}`;
+}
+
+function loopLabel(status) {
+  return status !== null && status.position && status.position.iterations
+    ? "Repeat"
+    : "Loop";
+}
+
+function formatPosition(status) {
+  // Only call them parts when the script really is a list of other scripts,
+  // every one of them named. Anything else gets the step number rather than
+  // an invented part.
+  const position = status.position;
+  const names = status.part_names || [];
+  if (position && names.length === position.parts && names.every(n => n)) {
+    return `part ${position.part} of ${position.parts}`;
+  }
+  return `step ${status.current_step + 1} of ${status.total_steps}`;
+}
+
+function formatEta(status, goneQuiet) {
+  // A board that has gone quiet is not telling us anything, and a clock
+  // still ticking down would be this page's own guess dressed up as news.
+  if (goneQuiet || status === null || !status.running || panel.eta === null) {
+    return "-";
+  }
+  const counted = (Date.now() - panel.eta.at) / 1000;
+  return `about ${formatDuration(Math.max(0, panel.eta.seconds - counted))} left`;
 }
 
 function formatSteps(status) {
@@ -1509,6 +1550,7 @@ function renderPanel() {
   let statusText;
   let statusClass = null;
   let loopText = "-";
+  let partText = "-";
   let stepText = "-";
   let note = "";
   let detail = "";
@@ -1519,6 +1561,7 @@ function renderPanel() {
 
   if (status !== null) {
     loopText = formatLoops(status);
+    partText = formatPosition(status);
     stepText = formatSteps(status);
     // Why a run stopped early. The firmware reports last_error when a step
     // fails and last_fault when it recovers from something worse.
@@ -1572,8 +1615,12 @@ function renderPanel() {
   runningEl.textContent = statusText;
   runningEl.classList.toggle("status-running", statusClass === "status-running");
   runningEl.classList.toggle("status-idle", statusClass === "status-idle");
+  const loopLabelEl = document.getElementById("st-loop-label");
+  if (loopLabelEl) loopLabelEl.textContent = loopLabel(status);
+  document.getElementById("st-part").textContent = partText;
   document.getElementById("st-loop").textContent = loopText;
   document.getElementById("st-step").textContent = stepText;
+  document.getElementById("st-eta").textContent = formatEta(status, goneQuiet);
   setPanelLine("st-note", note);
   setPanelLine("st-detail", detail);
   setPanelLine("st-fault", fault);
@@ -1635,9 +1682,6 @@ async function pollStatus() {
     panel.consecutiveFailedPolls += 1;
     // One or two misses change nothing on screen: the panel keeps showing
     // the last thing the device actually said.
-    if (panel.consecutiveFailedPolls >= MISSED_POLLS_BEFORE_QUIET) {
-      stopLocalCountdown();
-    }
     renderPanel();
     return;
   }
@@ -1647,6 +1691,11 @@ async function pollStatus() {
   panel.lastStatus = status;
   panel.lastStatusAt = Date.now();
 
+  panel.eta =
+    status.running && typeof status.estimated_seconds_remaining === "number"
+      ? { seconds: status.estimated_seconds_remaining, at: Date.now() }
+      : null;
+
   if (status.running) {
     panel.stoppedAt = null;
   } else {
@@ -1655,7 +1704,6 @@ async function pollStatus() {
       // to -- the same number the server writes into the run history --
       // so it is taken from here rather than tracked separately.
       panel.stoppedAt = { loops: status.loop_count, target: status.target_loops };
-      stopLocalCountdown();
     }
     // The device says it is not running, which is the confirmation any
     // pending stop was waiting for.
@@ -1693,25 +1741,10 @@ bindEvent("run-start-btn", "click", async () => {
   renderPanel();
 
   try {
-    // Fetch preview to get duration_seconds BEFORE starting
-    const preview = await api.previewScript(scriptId);
-    if (!preview.ok) {
-      throw new Error("Cannot run: " + preview.error);
-    }
-
-    // Calculate total duration client-side
-    const durationSeconds = preview.duration_seconds;
-    const loopCount = times || 1;
-    const totalDurationMs = durationSeconds * loopCount * 1000;
-
-    // Start the script
     await api.runScript(scriptId, times);
     lastRunScriptId = scriptId;
     localStorage.setItem("lastRunScriptId", scriptId);
     addToRecentScripts(scriptId);
-
-    // Start the local countdown timer with the calculated duration
-    startLocalCountdown(totalDurationMs);
   } catch (e) {
     errBox.textContent = e.message;
   } finally {
@@ -1727,8 +1760,6 @@ bindEvent("run-start-btn", "click", async () => {
 bindEvent("run-stop-btn", "click", async () => {
   const errBox = document.getElementById("run-error");
   errBox.textContent = "";
-  // The countdown was an estimate for a run that is ending now.
-  stopLocalCountdown();
 
   // A second press is only possible after the first one timed out, and
   // means "send it again". The server treats the resend as the same stop.
@@ -1749,56 +1780,6 @@ bindEvent("run-stop-btn", "click", async () => {
   }
   await pollStatus();
 });
-
-function updateLocalCountdownDisplay() {
-  const etaEl = document.getElementById("st-eta");
-  if (countdownState.totalDurationMs === null || countdownState.startTime === null) {
-    etaEl.textContent = "-";
-    return;
-  }
-
-  const now = Date.now();
-  const elapsedMs = now - countdownState.startTime;
-  const remainingMs = Math.max(0, countdownState.totalDurationMs - elapsedMs);
-  const remainingSeconds = remainingMs / 1000;
-
-  const displayValue = formatDuration(remainingSeconds);
-  etaEl.textContent = displayValue;
-
-  // Stop if countdown is done
-  if (remainingMs === 0) {
-    stopLocalCountdown();
-  }
-}
-
-function startLocalCountdown(totalDurationMs) {
-  // Cancel any existing countdown
-  if (countdownState.updateAnimationFrameId !== null) {
-    cancelAnimationFrame(countdownState.updateAnimationFrameId);
-  }
-
-  countdownState.totalDurationMs = totalDurationMs;
-  countdownState.startTime = Date.now();
-
-  function animationLoop() {
-    updateLocalCountdownDisplay();
-    if (countdownState.totalDurationMs !== null) {
-      countdownState.updateAnimationFrameId = requestAnimationFrame(animationLoop);
-    }
-  }
-
-  animationLoop();
-}
-
-function stopLocalCountdown() {
-  if (countdownState.updateAnimationFrameId !== null) {
-    cancelAnimationFrame(countdownState.updateAnimationFrameId);
-    countdownState.updateAnimationFrameId = null;
-  }
-  countdownState.totalDurationMs = null;
-  countdownState.startTime = null;
-  document.getElementById("st-eta").textContent = "-";
-}
 
 bindEvent("device-url-save", "click", async () => {
   const url = document.getElementById("device-url").value.trim();
@@ -1860,10 +1841,11 @@ async function pollDeployStatus() {
 
 function formatDuration(totalSeconds) {
   const s = Math.round(totalSeconds);
-  const m = Math.floor(s / 60);
-  const rem = s % 60;
-  if (m === 0) return `${rem}s`;
-  return `${m}m ${rem}s`;
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  if (m === 0) return `${s}s`;
+  return `${m}m ${s % 60}s`;
 }
 
 function escapeHtml(str) {
@@ -1889,6 +1871,9 @@ function escapeAttr(str) {
   renderPanel();
   pollStatus();
   setInterval(pollStatus, POLL_INTERVAL);
+  // Between polls the panel counts the device's estimate down itself, so
+  // the time left moves every second instead of jumping every five.
+  setInterval(renderPanel, 1000);
 
   initSidebarSections();
   await loadLivePressSupport();

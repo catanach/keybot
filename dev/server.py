@@ -31,7 +31,12 @@ from urllib.parse import urlparse, parse_qs
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "src"))
 from keycodes import KEYCODES  # noqa: E402
-from script_runner import ScriptRunner, DEFAULT_SCRIPT  # noqa: E402
+from script_runner import (  # noqa: E402
+    ScriptRunner,
+    DEFAULT_SCRIPT,
+    program_for_saving,
+    program_from_saved,
+)
 
 # Where this dev server keeps the script pushed to it. Overridable so a
 # test run (dev/repro_lockup.py) does not overwrite your working script.
@@ -53,12 +58,10 @@ MAX_HOLD = 1.0
 
 try:
     with open(SCRIPT_FILE, "r") as f:
-        SCRIPT = json.load(f)
-    if not isinstance(SCRIPT, list):
-        SCRIPT = DEFAULT_SCRIPT
+        SCRIPT = program_from_saved(json.load(f))
 except (OSError, ValueError):
-    # Missing or unreadable saved script: fall back to the built-in one
-    # rather than failing to start. Same as code.py.
+    # Missing, unreadable, or written by different firmware: fall back to
+    # the built-in one rather than failing to start. Same as code.py.
     SCRIPT = DEFAULT_SCRIPT
 
 
@@ -71,8 +74,10 @@ def press_fn(keycode_name, hold):
 
 
 def sleep_fn(duration):
-    end_time = time.monotonic() + duration
-    while time.monotonic() < end_time:
+    # Mirrors code.py, which uses whole nanoseconds because a float clock
+    # loses resolution over a long run.
+    end_time = time.monotonic_ns() + int(duration * 1000000000)
+    while time.monotonic_ns() < end_time:
         if runner.stop_requested:
             return
         time.sleep(0.05)
@@ -114,6 +119,11 @@ def background_loop():
             # Same guarantee code.py makes on the Pico: nothing ends this
             # loop, or the device would go quiet until it was restarted.
             last_fault = "while running: {}: {}".format(type(e).__name__, e)
+            # Mirrors code.py: the run's own ending gets an explanation too.
+            if runner.running and not runner.last_error:
+                runner.last_error = "the run stopped: {}: {}".format(
+                    type(e).__name__, e
+                )
             runner.running = False
             runner.stop_requested = False
             time.sleep(0.1)
@@ -215,6 +225,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         parsed = urlparse(self.path)
         if parsed.path == "/update":
+            # Mirrors code.py: refused, not staged, while a run is going.
+            if runner.running:
+                self._send_text(
+                    "a script is running, so it was not replaced", code=409
+                )
+                return
             length = int(self.headers.get("Content-Length", 0))
             body = self.rfile.read(length)
             try:
@@ -228,7 +244,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_text("error: {}".format(e), code=400)
                 return
             with open(SCRIPT_FILE, "w") as f:
-                json.dump(new_script, f)
+                json.dump(program_for_saving(new_script), f)
             self._send_text("ok")
         elif parsed.path == "/deploy_code":
             length = int(self.headers.get("Content-Length", 0))

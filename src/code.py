@@ -1,3 +1,4 @@
+import gc
 import os
 import sys
 import time
@@ -15,9 +16,8 @@ from script_runner import ScriptRunner, DEFAULT_SCRIPT
 try:
     from keycodes import KEYCODES
 except ImportError:
-    # This board has not been sent keycodes.py yet. Guarded because an
-    # ImportError here, outside the handler below, would leave the board
-    # with no server and no way to deploy a fix.
+    # Not sent keycodes.py yet. Guarded because an ImportError out here
+    # would leave the board with no server and no way to deploy a fix.
     KEYCODES = None
 
 keyboard = Keyboard(usb_hid.devices)
@@ -148,10 +148,9 @@ try:
 
     @server.route("/host_writes")
     def host_writes_handler(request):
-        """Hands the drive back to the Mac, or takes it back again.
-
-        boot.py leaves the filesystem alone whenever a HOST_WRITES file
-        exists. Takes effect on the next power cycle -- unplugging it."""
+        """Hands the drive back to the Mac, or takes it back again. boot.py
+        leaves the filesystem alone whenever a HOST_WRITES file exists, so
+        this takes effect on the next power cycle -- unplugging it."""
         wanted = request.query_params.get("enabled", "1") != "0"
         try:
             if wanted:
@@ -256,6 +255,9 @@ try:
     def status_handler(request):
         state = runner.status()
         state["last_fault"] = last_fault
+        # Free heap, so a program's size limit can be set from a real
+        # number measured on this board rather than guessed at.
+        state["mem_free"] = gc.mem_free()
         return Response(request, json.dumps(state), content_type="application/json")
 
     server.start(str(wifi.radio.ipv4_address))

@@ -990,6 +990,30 @@ function setPanelLine(id, text) {
   el.style.display = text ? "block" : "none";
 }
 
+document.getElementById("host-writes-btn").onclick = async () => {
+  const btn = document.getElementById("host-writes-btn");
+  const out = document.getElementById("host-writes-status");
+  if (!confirm("Hand the Pico's drive back to this Mac?\n\nYou'll be able to drag files onto CIRCUITPY again, but deploying firmware from this page will stop working until you give it back.")) {
+    return;
+  }
+  btn.disabled = true;
+  out.textContent = "Asking the Pico...";
+  try {
+    const r = await fetch("/api/device/host-writes", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: true }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(data.detail || "the Pico refused");
+    out.textContent = data.message;
+  } catch (e) {
+    out.textContent = e.message;
+  } finally {
+    btn.disabled = false;
+  }
+};
+
 function renderPanel() {
   const status = panel.lastStatus;
   // While we are waiting on a stop, a run of missed checks is the same

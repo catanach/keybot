@@ -123,6 +123,33 @@ try:
             runner.stop()
         return Response(request, "ok")
 
+    @server.route("/host_writes")
+    def host_writes_handler(request):
+        """Hands the drive back to the Mac, or takes it back again.
+
+        boot.py leaves the filesystem alone whenever a HOST_WRITES file
+        exists, so writing one here is the recovery path that does not need
+        safe mode. Takes effect on the next power cycle; this board has no
+        reset button, so that means unplugging it."""
+        wanted = request.query_params.get("enabled", "1") != "0"
+        try:
+            if wanted:
+                with open("/HOST_WRITES", "w") as f:
+                    f.write("")
+            else:
+                try:
+                    os.remove("/HOST_WRITES")
+                except OSError:
+                    pass
+        except OSError as e:
+            return Response(
+                request,
+                "error: couldn't change who owns the drive ({}). The board may "
+                "already have handed it to the Mac.".format(e),
+                status=(500, "Internal Server Error"),
+            )
+        return Response(request, "ok")
+
     @server.route("/update", methods=["POST"])
     def update_handler(request):
         try:

@@ -83,6 +83,23 @@ async def stop(after_current: bool = False) -> None:
         raise DeviceError(f"device refused to stop: {resp.text}")
 
 
+async def set_host_writes(enabled: bool) -> None:
+    """Asks the board to hand its drive back to the Mac, or to take it back.
+
+    Takes effect on the board's next power cycle. This is the recovery path
+    that does not need safe mode, which matters because a Pico W has no
+    reset button."""
+    url = f"{settings.get_device_url()}/host_writes"
+    params = {"enabled": "1" if enabled else "0"}
+    try:
+        async with _device_lock, httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.get(url, params=params)
+    except httpx.RequestError as e:
+        raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
+    if resp.status_code != 200:
+        raise DeviceError(f"device refused: {resp.text}")
+
+
 async def deploy_code(files: dict) -> None:
     """Sends new firmware source to the device. The device writes the
     files and restarts itself to pick them up -- only call this once

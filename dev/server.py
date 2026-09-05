@@ -107,6 +107,7 @@ def release_fn():
 # server answers on its own thread, so it only needs to count the yields
 # for the tests.
 tick_count = [0]
+host_writes = False
 
 
 def tick_fn():
@@ -179,6 +180,12 @@ class Handler(BaseHTTPRequestHandler):
             last_fault = None
 
             runner.start(times)
+            self._send_text("ok")
+        elif parsed.path == "/host_writes":
+            # Mirrors the firmware. Nothing to remount here; the dev server
+            # just records the request so the webapp path can be tested.
+            global host_writes
+            host_writes = params.get("enabled", ["1"])[0] != "0"
             self._send_text("ok")
         elif parsed.path == "/stop":
             if params.get("after_current", [None])[0]:

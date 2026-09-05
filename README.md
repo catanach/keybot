@@ -152,14 +152,19 @@ it could not, and every deploy failed with "Read-only filesystem".
 The trade is that CIRCUITPY is read-only on the Mac while this is active, so
 you cannot drag files onto it.
 
-If a deploy ever leaves the board broken:
+A Pico W has no reset button, only BOOTSEL, so every way back is a cable
+action:
 
-1. Press the reset button twice in quick succession. CircuitPython skips
-   `boot.py` in safe mode, so CIRCUITPY mounts writable again and
-   `./deploy.sh` works as it used to.
-2. To keep it that way for a while, create an empty file called `HOST_WRITES`
-   on CIRCUITPY while in safe mode. `boot.py` leaves the filesystem alone
-   whenever that file exists. Delete it to go back to over-the-air deploys.
+1. **While the board still answers**, use "Hand the drive back to the Mac"
+   under Firmware in the webapp. Unplug and replug afterwards and CIRCUITPY
+   is writable on the Mac again. It works by writing a `HOST_WRITES` file
+   that `boot.py` looks for; delete that file to give the drive back.
+2. **If the board no longer answers**, unplug and replug it twice in quick
+   succession, the second time within about a second of the first. That
+   enters safe mode, where CircuitPython skips `boot.py`, so CIRCUITPY
+   mounts writable and files can be dragged on by hand.
+3. **Last resort**, hold BOOTSEL while plugging in. The board comes up as
+   RPI-RP2 and a fresh `.uf2` can be flashed, which erases everything.
 
 `boot.py` itself is deliberately not deployable over the air. A broken
 `code.py` can be replaced remotely; a broken `boot.py` cannot.

@@ -9,16 +9,22 @@ be a keyboard, so it could never write its own code.py.
 Remounting here flips that. The board can write, so deploys from the webapp
 work, and CIRCUITPY becomes look-but-don't-touch on the Mac.
 
-TWO WAYS BACK, if a deploy ever leaves the board broken:
+WAYS BACK, if a deploy ever leaves the board broken. A Pico W has no reset
+button, only BOOTSEL, so every one of these is a cable action:
 
-  1. Press the reset button twice in quick succession. That boots into safe
-     mode, where CircuitPython skips boot.py entirely, so CIRCUITPY mounts
-     writable on the Mac exactly as it used to and files can be dragged on.
+  1. Easiest, while the board still answers: "Hand the drive back to the
+     Mac" in the webapp's Settings. That asks the board to write a
+     HOST_WRITES file, and on the next power cycle this script leaves the
+     filesystem alone, so CIRCUITPY mounts writable on the Mac again.
+     Deleting HOST_WRITES puts things back.
 
-  2. While in safe mode, create an empty file called HOST_WRITES on
-     CIRCUITPY. This script then leaves the filesystem alone on every
-     subsequent boot, so the board stays Mac-writable until that file is
-     deleted. Use this to work on the board by hand for a while.
+  2. If the board no longer answers: unplug and replug it TWICE in quick
+     succession, the second time within about a second of the first. That
+     enters safe mode, where CircuitPython skips boot.py entirely and
+     CIRCUITPY mounts writable, so files can be dragged on by hand.
+
+  3. Last resort: hold BOOTSEL while plugging in. The board comes up as
+     RPI-RP2 and a fresh .uf2 can be flashed, which erases everything.
 
 Deliberately not in DEPLOYABLE_FILES in code.py: a broken code.py can be
 replaced over the air, but a broken boot.py cannot, so this one only ever
@@ -28,15 +34,22 @@ changes over USB.
 import os
 import storage
 
+# Everything printed here lands in boot_out.txt on the board, which is the
+# only way to see what happened during boot. Silence here was hiding a
+# failure once already.
 try:
     host_writes_requested = "HOST_WRITES" in os.listdir("/")
-except Exception:
+except Exception as e:
+    print("keybot boot: could not list the filesystem ({}), continuing".format(e))
     host_writes_requested = False
 
-if not host_writes_requested:
+if host_writes_requested:
+    print("keybot boot: HOST_WRITES found, leaving the filesystem to the Mac")
+else:
     try:
         storage.remount("/", readonly=False)
-    except Exception:
-        # If the remount is refused, carry on booting rather than bricking.
-        # The board stays read-only to itself, exactly as it was before.
-        pass
+        print("keybot boot: filesystem remounted writable for the board")
+    except Exception as e:
+        # Carry on booting rather than bricking. The board stays read-only
+        # to itself, which is how it behaved before this file existed.
+        print("keybot boot: remount refused ({}: {})".format(type(e).__name__, e))

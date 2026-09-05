@@ -35,6 +35,10 @@ class CopyIn(BaseModel):
     name: Optional[str] = None
 
 
+class HostWritesIn(BaseModel):
+    enabled: bool
+
+
 class RunIn(BaseModel):
     times: Optional[int] = None
 
@@ -387,6 +391,28 @@ DEPLOY_POLL_SECONDS = 1.5
 DEPLOY_RESTART_TIMEOUT_SECONDS = 60
 
 
+async def api_device_host_writes(request: Request):
+    body, err = await parse_body(request, HostWritesIn)
+    if err:
+        return err
+    try:
+        await device.set_host_writes(body.enabled)
+    except device.DeviceError as e:
+        return error(str(e), 502)
+    if body.enabled:
+        message = (
+            "Done. Unplug the Pico and plug it back in, and CIRCUITPY will be "
+            "writable on this Mac again. Firmware deploys from here stop working "
+            "until you hand it back."
+        )
+    else:
+        message = (
+            "Done. Unplug the Pico and plug it back in, and the board takes its "
+            "drive back, so deploys from here work again."
+        )
+    return JSONResponse({"ok": True, "message": message})
+
+
 async def api_device_deploy(request: Request):
     if deploy_state["phase"] not in ("idle", "done", "error"):
         return error("a deploy is already in progress", 409)
@@ -519,6 +545,7 @@ routes = [
     Route("/api/scripts/{script_id}/run", api_run_script, methods=["POST"]),
     Route("/api/device/status", api_device_status, methods=["GET"]),
     Route("/api/device/stop", api_device_stop, methods=["POST"]),
+    Route("/api/device/host-writes", api_device_host_writes, methods=["POST"]),
     Route("/api/device/deploy", api_device_deploy, methods=["POST"]),
     Route("/api/device/deploy/status", api_device_deploy_status, methods=["GET"]),
     Route("/api/history", api_history, methods=["GET"]),

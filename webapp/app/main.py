@@ -71,6 +71,11 @@ class SettingsIn(BaseModel):
     device_url: str
 
 
+class PressIn(BaseModel):
+    key: str
+    hold: float = 0.1
+
+
 async def parse_body(request: Request, model):
     try:
         raw = await request.json()
@@ -179,6 +184,46 @@ async def api_run_script(request: Request):
 async def api_device_status(request: Request):
     try:
         return JSONResponse(await device.get_status())
+    except device.DeviceError as e:
+        return error(str(e), 502)
+
+
+async def api_device_press(request: Request):
+    """Sends one key to the device straight away. This is what the recorder
+    calls per keystroke, so a recording is felt on the PS5 as it is typed."""
+    body, err = await parse_body(request, PressIn)
+    if err:
+        return err
+    try:
+        await device.press(body.key, body.hold)
+    except device.DeviceBusy as e:
+        return error(_busy_message(str(e)), 409)
+    except device.DeviceError as e:
+        return error(str(e), 502)
+    return JSONResponse({"ok": True})
+
+
+def _busy_message(said: str) -> str:
+    """The board knows a script is running but not which one -- it holds
+    steps, not names. Put the name back in so the page can say what is in
+    the way, and leave the board's own words alone when we don't know."""
+    if not said.startswith("a script is running"):
+        return said
+    script_id = (settings.get_last_run() or {}).get("script_id")
+    script = storage.get_script(script_id) if script_id else None
+    if not script:
+        return said
+    return said.replace("a script is running", f"“{script['name']}” is running", 1)
+
+
+async def api_device_press_supported(request: Request):
+    """Whether the firmware on the board has /press yet.
+
+    A board that cannot be reached is not the same as a board without the
+    route, so that stays a 502: the page keeps the switch and finds out for
+    real on the first keystroke, rather than hiding it over a blip."""
+    try:
+        return JSONResponse({"supported": await device.press_supported()})
     except device.DeviceError as e:
         return error(str(e), 502)
 
@@ -599,6 +644,8 @@ routes = [
     Route("/api/scripts/{script_id}/run", api_run_script, methods=["POST"]),
     Route("/api/device/status", api_device_status, methods=["GET"]),
     Route("/api/device/stop", api_device_stop, methods=["POST"]),
+    Route("/api/device/press", api_device_press, methods=["POST"]),
+    Route("/api/device/press/supported", api_device_press_supported, methods=["GET"]),
     Route("/api/device/host-writes", api_device_host_writes, methods=["POST"]),
     Route("/api/device/deploy", api_device_deploy, methods=["POST"]),
     Route("/api/device/deploy/status", api_device_deploy_status, methods=["GET"]),

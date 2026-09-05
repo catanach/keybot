@@ -52,6 +52,7 @@ Any time you change something in `src/` or `lib/`, plug the Pico into your Mac a
   - `estimated_seconds_remaining` — a rough estimate of how much longer it'll take, based on the script's own wait times (`null` when `target_loops` is `null`, since there's no fixed end point to estimate toward)
   - `last_error` — why the last run stopped early, in plain language (e.g. `stopped at step 2 of 5: there is no key called 'UP'`), or `null` if it finished normally. A step that fails stops that run, releases every key, and gets reported here; it never takes the device down with it.
   - `last_fault` — the last problem outside of a script run (a failed write, a hiccup in the web server), or `null`. Also written to `error_log.txt` on the board so it survives a restart.
+- `http://<pico-ip>:5000/press?key=ENTER&hold=0.1` presses one key straight away and returns `ok` once it has been pressed and released. This is what the webapp's recorder calls for each key, so a recording is felt on the PS5 as it is typed. `hold` is optional (0.1 seconds by default) and cannot be longer than 1 second, because nothing else is served while a key is held down. It is refused with a 409 while a script is running or while the board is restarting for new firmware, so a live key can never land in the middle of a run.
 - `http://<pico-ip>:5000/update` (POST, with a JSON body like `[["press", "ENTER", 0.1], ["wait", 5]]`) saves a new script and restarts the board to start using it immediately. Returns `ok, restarting`, or an error message if the JSON body is invalid.
 
 ## Developing without the Pico
@@ -69,18 +70,20 @@ curl http://localhost:8085/status
 curl "http://localhost:8085/start?times=2"
 curl http://localhost:8085/stop
 curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
+curl "http://localhost:8085/press?key=ENTER&hold=0.1"
 ```
 
 It keeps its own `dev/script.json`, separate from the one on the Pico, so testing locally never touches the board's saved script. It also refuses key names the real board would refuse, so a typo like `UP` (the real name is `UP_ARROW`) shows up on your Mac instead of on the hardware.
 
 ### Tests
 
-Three things to run, none of which needs the Pico:
+Four things to run, none of which needs the Pico:
 
 ```
-python3 -m unittest discover -s dev   # the script-running logic, and the key list
+python3 -m unittest discover -s dev   # the script logic, the key list, and /press
 python3 dev/repro_lockup.py           # the device recovers from bad scripts
 node dev/test_picker.js               # the editor's key picker
+node dev/test_recording.js            # sending recorded keys to the device
 ```
 
 `dev/test_picker.js` runs the editor's key picker without a browser: the real
@@ -89,6 +92,12 @@ node dev/test_picker.js               # the editor's key picker
 `dev/fake_dom.js`. It exists because the picker once shipped looking correct
 in the code and completely broken on the page, and nothing here could tell
 the difference.
+
+`dev/test_recording.js` uses that same stand-in browser for the other half of
+recording: the keys going to the device as they are typed. It drives a stubbed
+device that can be made slow, unreachable, or busy, which is how the awkward
+cases -- typing faster than Wi-Fi, a board that stops answering mid-recording --
+get tested without unplugging anything.
 
 `dev/repro_lockup.py` starts its own copy of the dev server on a spare port, feeds it the kinds of broken script the webapp can produce, and checks that the device is still answering and still usable afterwards. Every case has to print PASS.
 
@@ -123,6 +132,7 @@ Your scripts are saved as JSON files under `webapp/data/scripts/` (created autom
 - A script's steps are either `Press` (a key and hold time), `Wait` (seconds), or `Run script` (another script and how many times to repeat it inline). The key is chosen from a searchable list of the keys the device actually has -- type `up` for the up arrow or `8` for the digit, or click "Press a key" and press it. A script saved before this list existed that names a key the device does not have is flagged in place, and cannot be saved again until a real key is picked.
 - The "Run script" step type is how you compose scripts: a script that runs Script A once, then Script B 10 times, then Script C once is just three "Run script" steps. When you start that composed script, the webapp resolves all the references into one flat sequence before sending it to the device, so the Pico itself doesn't need to know anything about the composition. That flattened sequence is capped at 2,000 steps and checked for circular references (A running B running A), so a mistake there is caught immediately with a clear error instead of hanging the device.
 - A persistent panel on the right lets you pick a script, optionally give it a repeat count, and hit Start or Stop. While something is running it shows the loop count, current step, and an estimated time remaining, refreshed automatically. The panel keeps checking the device from the moment the page loads until it closes, so opening it partway through an overnight run shows that run -- it does not have to be the page that started it.
+- The Record section captures what you type into a script, and -- with "Send keys to the PS5 while I record" switched on, which is the default -- sends each key to the device as you press it, so you can see what you are recording happen on the PS5. Keys are sent one at a time, in the order they were typed. They go over Wi-Fi, so live presses lag slightly; the timings written into the script come from the browser's clock and are unaffected, so replaying the script is as accurate as it ever was. If the board stops answering, recording carries on and says so above the preview, and a key that failed to send is still in the script. If typing gets more than about ten keys ahead of the board, sending stops for the rest of that recording rather than pressing keys long after you typed them. The switch is hidden entirely if the firmware on the board is older than this feature.
 - The History view lists the last 50 runs: which script, how it ended (finished, you stopped it, failed, lost contact, or "stop requested, unconfirmed" -- we asked it to stop and then lost the board before it said it had), how many loops it got through, and why it stopped if something went wrong. The webapp watches the device itself every 5 seconds, so a run is recorded whether or not a browser is open -- including one that ends overnight. History lives in `webapp/data/history.json`.
 
 ### Pointing it at the Pico or the dev server

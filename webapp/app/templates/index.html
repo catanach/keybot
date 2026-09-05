@@ -103,7 +103,18 @@
                 <div class="recording-stat-value" id="recording-elapsed">0s</div>
               </div>
             </div>
+            <div class="recording-live" id="recording-live-row">
+              <label class="recording-live-switch">
+                <input type="checkbox" id="recording-live" checked>
+                <span>Send keys to the PS5 while I record</span>
+              </label>
+              <div class="recording-live-note">
+                Keys go over Wi-Fi, so live presses lag slightly. Replay timing is unaffected.
+              </div>
+            </div>
             <button id="recording-toggle-btn" class="btn primary" style="width: 100%; margin-bottom: 10px;">Start Recording</button>
+            <div class="recording-banner" id="recording-banner" style="display: none;"></div>
+            <div class="recording-live-problem" id="recording-live-problem" style="display: none;"></div>
             <div class="recording-script-preview" id="recording-preview" style="display: none;">
             </div>
             <div class="button-row">

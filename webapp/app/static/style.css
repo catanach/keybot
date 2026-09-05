@@ -328,6 +328,51 @@ body {
   letter-spacing: 0.01em;
 }
 
+/* Sending keys while recording */
+
+.recording-live {
+  margin-bottom: 10px;
+}
+
+.recording-live-switch {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.recording-live-switch input {
+  margin: 2px 0 0 0;
+}
+
+.recording-live-note {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+  margin: 4px 0 0 20px;
+}
+
+.recording-banner {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: 4px;
+  padding: 8px 10px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.recording-live-problem {
+  color: var(--danger);
+  font-size: 12px;
+  line-height: 1.5;
+  margin-bottom: 10px;
+}
+
 /* Sidebar buttons */
 
 .sidebar-input {

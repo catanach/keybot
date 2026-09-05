@@ -1,6 +1,6 @@
 """Talks to whichever device is configured (the local dev server or the
 real Pico) over the same HTTP API used everywhere else in this project:
-/status, /start, /stop, /update.
+/status, /start, /stop, /update, /press.
 """
 
 import asyncio
@@ -41,6 +41,51 @@ async def get_status() -> dict:
     if resp.status_code != 200:
         raise DeviceError(f"device returned an error: {resp.text}")
     return resp.json()
+
+
+class DeviceBusy(DeviceError):
+    """The device understood the request and turned it down because it is
+    busy -- a script is running, or it is about to restart."""
+
+
+async def press(key: str, hold: float) -> None:
+    """Presses one key on the device, now.
+
+    This is the only call that does NOT take _device_lock. Recording sends a
+    key per keystroke, and the lock can be held for several seconds by a
+    /status poll or a deploy; queueing a keystroke behind that would turn
+    live typing into a stall. The board serializes callers in its own poll
+    loop regardless, so the lock decides only who waits, and for a keystroke
+    that has to be no one. The timeout covers the hold plus a Wi-Fi round
+    trip rather than the shared five seconds.
+    """
+    url = f"{settings.get_device_url()}/press"
+    try:
+        async with httpx.AsyncClient(timeout=hold + 1.5) as client:
+            resp = await client.get(url, params={"key": key, "hold": hold})
+    except httpx.RequestError as e:
+        raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
+    if resp.status_code == 409:
+        raise DeviceBusy(resp.text)
+    if resp.status_code != 200:
+        raise DeviceError(f"device refused the key: {resp.text}")
+
+
+async def press_supported() -> bool:
+    """Whether the firmware on the board has /press at all.
+
+    Asked by sending a /press with no key: firmware that has the route
+    answers 400 ("press needs a key") and presses nothing, and firmware that
+    does not have it answers 404. That needs no extra endpoint on the file
+    with the least room to spare, and presses no real key to find out.
+    """
+    url = f"{settings.get_device_url()}/press"
+    try:
+        async with _device_lock, httpx.AsyncClient(timeout=TIMEOUT) as client:
+            resp = await client.get(url)
+    except httpx.RequestError as e:
+        raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
+    return resp.status_code != 404
 
 
 async def push_script(steps: list) -> None:

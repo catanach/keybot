@@ -44,6 +44,12 @@ const api = {
   async deviceStop() {
     return fetchJson("/api/device/stop", "POST", {});
   },
+  async devicePress(key, hold) {
+    return fetchJson("/api/device/press", "POST", { key, hold });
+  },
+  async devicePressSupported() {
+    return fetchJson("/api/device/press/supported", "GET");
+  },
   async deployStart() {
     return fetchJson("/api/device/deploy", "POST", {});
   },
@@ -164,6 +170,127 @@ const recordingKeysCount = document.getElementById("recording-keys");
 const recordingElapsed = document.getElementById("recording-elapsed");
 const recordingPreview = document.getElementById("recording-preview");
 const recordingError = document.getElementById("recording-error");
+const recordingBanner = document.getElementById("recording-banner");
+const recordingLiveRow = document.getElementById("recording-live-row");
+const recordingLiveToggle = document.getElementById("recording-live");
+const recordingLiveProblem = document.getElementById("recording-live-problem");
+
+// -----
+// Sending keys to the Pico as they are typed
+//
+// Recording used to be a browser-only affair: keys went into an array and
+// nothing reached the device until Save. Each key now also goes to the
+// board, one request at a time, in the order it was typed. The queue is
+// here rather than on the board because the board has the least memory and
+// the least room in code.py, and because a queue there would keep pressing
+// keys after the browser had moved on.
+// -----
+
+// One request in flight at a time, so keys arrive in the order they were
+// typed. Nothing is ever merged or quietly thrown away.
+const liveSend = {
+  queue: [],
+  sending: false,
+  // Set when the typing has run so far ahead of the Pico that sending is
+  // pointless. Recording carries on; only the sending stops.
+  gaveUp: false,
+};
+
+// How far behind sending may fall before it stops. Wi-Fi keeps every
+// request honest, so a long backlog means keys landing on the PS5 well
+// after they were typed -- worse than not sending them at all.
+const LIVE_BACKLOG_LIMIT = 10;
+
+// The hold each live key gets, matching the 0.1 recorded for the step, so
+// what the PS5 feels now is what it will feel on replay.
+const LIVE_HOLD = 0.1;
+
+const LIVE_UNREACHABLE_NOTE =
+  "Not reaching the Pico -- still recording your keys, but they aren't being " +
+  "sent. Check it's powered on.";
+const LIVE_BACKLOG_NOTE =
+  "The Pico is too far behind to keep up, so keys have stopped being sent for " +
+  "this recording. Your keys are still being saved to the script.";
+
+// Whether the firmware on the board has /press at all. Asked once, when the
+// page loads: offering a switch that 404s on every keystroke is worse than
+// not offering one. A board that can't be reached is not a board without
+// the route, so that leaves the switch alone.
+let livePressSupported = true;
+
+async function loadLivePressSupport() {
+  try {
+    const data = await api.devicePressSupported();
+    livePressSupported = data.supported !== false;
+  } catch {
+    livePressSupported = true;
+  }
+  recordingLiveRow.hidden = !livePressSupported;
+}
+
+function liveSendWanted() {
+  return livePressSupported && recordingLiveToggle.checked === true;
+}
+
+function setLiveProblem(text) {
+  recordingLiveProblem.textContent = text;
+  recordingLiveProblem.style.display = text ? "block" : "none";
+}
+
+function updateRecordingBanner() {
+  if (!recordingState.isRecording) {
+    recordingBanner.style.display = "none";
+    return;
+  }
+  recordingBanner.style.display = "block";
+  recordingBanner.textContent = liveSendWanted()
+    ? "Recording. Every key you press is sent to the PS5 and saved to the " +
+      "script. Typing anywhere on this page is captured."
+    : "Recording. Every key you press is saved to the script but not sent to " +
+      "the PS5. Typing anywhere on this page is captured.";
+}
+
+function queueLiveKey(key) {
+  if (liveSend.gaveUp) return;
+  if (liveSend.queue.length >= LIVE_BACKLOG_LIMIT) {
+    liveSend.gaveUp = true;
+    liveSend.queue = [];
+    setLiveProblem(LIVE_BACKLOG_NOTE);
+    return;
+  }
+  liveSend.queue.push(key);
+  sendQueuedKeys();
+}
+
+async function sendQueuedKeys() {
+  // One at a time: a second caller here would let a later key overtake an
+  // earlier one, and the board answers one request at a time anyway.
+  if (liveSend.sending) return;
+  liveSend.sending = true;
+  try {
+    while (liveSend.queue.length > 0 && !liveSend.gaveUp) {
+      const key = liveSend.queue.shift();
+      try {
+        await api.devicePress(key, LIVE_HOLD);
+        // Whatever was wrong is over. A key that failed on the way stays in
+        // the script exactly as it was typed.
+        setLiveProblem("");
+      } catch (e) {
+        // 409 is the board saying it is busy, in its own words. Anything
+        // else, at this point, means it isn't answering.
+        setLiveProblem(e.status === 409 ? e.message : LIVE_UNREACHABLE_NOTE);
+      }
+    }
+  } finally {
+    liveSend.sending = false;
+  }
+}
+
+function resetLiveSend() {
+  liveSend.queue = [];
+  liveSend.gaveUp = false;
+  setLiveProblem("");
+}
 
 recordingToggleBtn.addEventListener("click", async () => {
   if (recordingState.isRecording) {
@@ -179,6 +306,13 @@ recordingSaveBtn.addEventListener("click", async () => {
 
 recordingCancelBtn.addEventListener("click", () => {
   resetRecording();
+});
+
+recordingLiveToggle.addEventListener("change", () => {
+  // Turning it off mid-recording stops the keys already waiting, not just
+  // the ones still to come.
+  if (!liveSendWanted()) liveSend.queue = [];
+  updateRecordingBanner();
 });
 
 function startRecording() {
@@ -199,6 +333,8 @@ function startRecording() {
   recordingPreview.textContent = "[]";
   recordingSaveBtn.style.display = "none";
   recordingCancelBtn.style.display = "none";
+  resetLiveSend();
+  updateRecordingBanner();
 
   // Start elapsed time counter
   recordingState.elapsedTimer = setInterval(() => {
@@ -227,6 +363,7 @@ function stopRecording() {
   recordingStatusText.textContent = "Stopped";
   recordingSaveBtn.style.display = "inline-block";
   recordingCancelBtn.style.display = "inline-block";
+  updateRecordingBanner();
 }
 
 // Browser key events do not use the same names as the keyboard library on
@@ -352,8 +489,11 @@ function recordKeystroke(event) {
     recordingState.capturedScript.push(["wait", Math.max(0.1, roundedTime)]);
   }
 
-  recordingState.capturedScript.push(["press", keyCode, 0.1]);
+  recordingState.capturedScript.push(["press", keyCode, LIVE_HOLD]);
   recordingState.keystrokeCount++;
+  // The script has the key either way. Sending it is a separate thing that
+  // is allowed to fail without changing what was recorded.
+  if (liveSendWanted()) queueLiveKey(keyCode);
 
   recordingKeysCount.textContent = recordingState.keystrokeCount;
   updateRecordingPreview();
@@ -420,6 +560,8 @@ function resetRecording() {
   recordingSaveBtn.style.display = "none";
   recordingCancelBtn.style.display = "none";
   recordingError.textContent = "";
+  resetLiveSend();
+  updateRecordingBanner();
 }
 
 // -----
@@ -1706,6 +1848,7 @@ function escapeAttr(str) {
   setInterval(pollStatus, POLL_INTERVAL);
 
   initSidebarSections();
+  await loadLivePressSupport();
   await loadKeycodes();
   await renderList();
   await loadSettings();

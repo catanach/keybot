@@ -17,6 +17,7 @@ Then hit it exactly like you would the real Pico, e.g.:
     curl http://localhost:8085/status
     curl "http://localhost:8085/start?times=2"
     curl http://localhost:8085/stop
+    curl "http://localhost:8085/press?key=ENTER&hold=0.1"
     curl -X POST http://localhost:8085/update -d '[["press", "ENTER", 0.1], ["wait", 2]]'
 """
 
@@ -46,6 +47,9 @@ SCRIPT_FILE = os.environ.get(
 KEYCODE_NAMES = frozenset(name for name, _label in KEYCODES)
 
 DEPLOYABLE_FILES = ("code.py", "script_runner.py", "keycodes.py")
+
+# Mirrors code.py: the longest a single /press may hold a key down.
+MAX_HOLD = 1.0
 
 try:
     with open(SCRIPT_FILE, "r") as f:
@@ -169,6 +173,37 @@ class Handler(BaseHTTPRequestHandler):
                 runner.finish_current_loop()
             else:
                 runner.stop()
+            self._send_text("ok")
+        elif parsed.path == "/press":
+            # Mirrors code.py: one key, pressed before this answers. The
+            # firmware also refuses while a firmware deploy is pending;
+            # there is no counterpart here, because this server never
+            # restarts itself (see the module docstring).
+            if runner.running:
+                self._send_text("a script is running, so that key was not sent", code=409)
+                return
+            key = params.get("key", [None])[0]
+            if not key:
+                self._send_text("error: press needs a key", code=400)
+                return
+            hold_param = params.get("hold", [None])[0] or "0.1"
+            try:
+                hold = float(hold_param)
+            except ValueError:
+                self._send_text(
+                    "error: hold must be a number, got '{}'".format(hold_param), code=400
+                )
+                return
+            if hold < 0 or hold > MAX_HOLD:
+                self._send_text(
+                    "error: hold must be between 0 and {} seconds".format(MAX_HOLD), code=400
+                )
+                return
+            try:
+                press_fn(key, hold)
+            except ValueError as e:
+                self._send_text("error: {}".format(e), code=400)
+                return
             self._send_text("ok")
         elif parsed.path == "/status":
             state = runner.status()

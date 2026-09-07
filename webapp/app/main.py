@@ -12,7 +12,16 @@ from starlette.responses import HTMLResponse, JSONResponse
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from . import storage, flatten, device, settings, firmware, history, keycodes
+from . import (
+    storage,
+    flatten,
+    device,
+    settings,
+    firmware,
+    history,
+    keycodes,
+    recordings,
+)
 
 APP_DIR = Path(__file__).parent
 
@@ -58,6 +67,25 @@ class ScriptIn(BaseModel):
     name: str
     description: str = ""
     steps: list
+    # The rev this save started from. The editor always sends it; a save
+    # without one goes through whatever the stored script is at.
+    rev: Optional[int] = None
+
+
+class StepsIn(BaseModel):
+    steps: list
+    name: str = "this script"
+    own_id: Optional[str] = None
+
+
+class RecordingIn(BaseModel):
+    name: str
+    description: str = ""
+    steps: list
+    target_id: Optional[str] = None
+    target_name: Optional[str] = None
+    target_rev: Optional[int] = None
+    add_run_step: bool = True
 
 
 class CopyIn(BaseModel):
@@ -121,12 +149,21 @@ async def api_create_script(request: Request):
 
 async def api_update_script(request: Request):
     script_id = request.path_params["script_id"]
-    if storage.get_script(script_id) is None:
+    existing = storage.get_script(script_id)
+    if existing is None:
         return error("script not found", 404)
     body, err = await parse_body(request, ScriptIn)
     if err:
         return err
-    return JSONResponse(storage.save_script(script_id, body.name, body.description, body.steps))
+    try:
+        saved = storage.save_script(
+            script_id, body.name, body.description, body.steps, expected_rev=body.rev
+        )
+    except storage.RevMismatch:
+        return error(
+            f"“{existing['name']}” changed in another tab, reload before saving", 409
+        )
+    return JSONResponse(saved)
 
 
 async def api_delete_script(request: Request):
@@ -150,6 +187,54 @@ async def api_preview_script(request: Request):
     if storage.get_script(script_id) is None:
         return error("script not found", 404)
     return JSONResponse(flatten.preview(script_id))
+
+
+async def api_preview_steps(request: Request):
+    """What a list of steps would cost the board, for steps the server has
+    never seen -- the rows sitting unsaved in the editor. Without this the
+    page could only ask about the stored script, which is not what is about
+    to be pushed."""
+    body, err = await parse_body(request, StepsIn)
+    if err:
+        return err
+    return JSONResponse(flatten.preview_steps(body.steps, body.name, body.own_id))
+
+
+# ---------------------------------------------------------------------------
+# Recordings
+# ---------------------------------------------------------------------------
+
+
+async def api_recording_next_name(request: Request):
+    names = [s["name"] for s in storage.list_scripts()]
+    return JSONResponse({"name": recordings.next_recording_name(names)})
+
+
+async def api_save_recording(request: Request):
+    """Saves a recording, and -- when it is going onto the end of another
+    script -- adds the step that runs it. Both writes are done here so that
+    the order, and what a half-done save leaves behind, live in one place
+    rather than in the browser."""
+    body, err = await parse_body(request, RecordingIn)
+    if err:
+        return err
+    try:
+        result = recordings.save_recording(
+            body.steps,
+            body.name,
+            body.description,
+            body.target_id,
+            body.target_name,
+            body.target_rev,
+            body.add_run_step,
+        )
+    except recordings.SaveError as e:
+        return JSONResponse(
+            {"detail": e.message, "script": e.script}, status_code=e.status
+        )
+    except firmware.FirmwareError as e:
+        return error(f"can't check the size of the script: {e}", 500)
+    return JSONResponse(result)
 
 
 # ---------------------------------------------------------------------------
@@ -706,6 +791,10 @@ routes = [
     Route("/", index),
     Route("/api/scripts", api_list_scripts, methods=["GET"]),
     Route("/api/scripts", api_create_script, methods=["POST"]),
+    # Kept above the /{script_id} routes, which "preview" also looks like.
+    Route("/api/scripts/preview", api_preview_steps, methods=["POST"]),
+    Route("/api/recordings/save", api_save_recording, methods=["POST"]),
+    Route("/api/recordings/next-name", api_recording_next_name, methods=["GET"]),
     Route("/api/scripts/{script_id}", api_get_script, methods=["GET"]),
     Route("/api/scripts/{script_id}", api_update_script, methods=["PUT"]),
     Route("/api/scripts/{script_id}", api_delete_script, methods=["DELETE"]),

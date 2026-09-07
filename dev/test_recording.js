@@ -51,6 +51,20 @@ function fakeFetch(url, opts = {}) {
     savedSteps = JSON.parse(opts.body).steps;
     return Promise.resolve(jsonResponse({ id: "new", name: "Recording", steps: savedSteps }));
   }
+  if (url === "/api/recordings/save") {
+    const body = JSON.parse(opts.body);
+    savedSteps = body.steps;
+    return Promise.resolve(
+      jsonResponse({
+        script: { id: "new", name: body.name, steps: savedSteps },
+        target: null,
+        warning: "",
+      })
+    );
+  }
+  if (url === "/api/recordings/next-name") {
+    return Promise.resolve(jsonResponse({ name: "Recording 1" }));
+  }
   if (url === "/api/device/press") {
     const key = JSON.parse(opts.body).key;
     press.sent.push(key);
@@ -108,6 +122,11 @@ const statusText = elementsById.get("recording-status-text");
 // Save actually sends to the server.
 async function saveAndReadSteps() {
   savedSteps = null;
+  // Stop is what puts the save panel up and fills the name in. Saving from
+  // a recording that is still going is not something the page offers.
+  if (statusText.textContent === "Recording...") context.stopRecording();
+  await settle();
+  elementsById.get("recording-name").value = "Recording 1";
   await context.saveRecordedScript();
   return savedSteps;
 }

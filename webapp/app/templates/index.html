@@ -121,10 +121,32 @@
             <div class="recording-live-problem" id="recording-live-problem" style="display: none;"></div>
             <div class="recording-script-preview" id="recording-preview" style="display: none;">
             </div>
-            <div class="button-row">
-              <button id="recording-save-btn" class="btn success" style="flex: 1; display: none;">Save</button>
-              <button id="recording-cancel-btn" class="btn" style="flex: 1; display: none;">Cancel</button>
+            <div class="recording-save-panel" id="recording-save-panel" style="display: none;">
+              <div class="recording-save-summary" id="recording-save-summary"></div>
+              <label class="field-label" style="margin: 8px 0 4px;">Save as</label>
+              <label class="recording-save-choice">
+                <input type="radio" name="recording-save-where" id="recording-save-new" value="new">
+                <span>A new script</span>
+              </label>
+              <label class="recording-save-choice" id="recording-save-target-row" style="display: none;">
+                <input type="radio" name="recording-save-where" id="recording-save-target" value="target">
+                <span id="recording-save-target-label"></span>
+              </label>
+              <div class="hint" id="recording-save-target-note" style="display: none;"></div>
+              <label class="recording-save-choice" id="recording-save-reuse-row" style="display: none;">
+                <input type="checkbox" id="recording-save-reuse">
+                <span>Keep as its own script and add a Run step</span>
+              </label>
+              <div id="recording-name-row">
+                <label class="field-label" style="margin: 8px 0 4px;">Name</label>
+                <input type="text" id="recording-name" class="sidebar-input">
+              </div>
+              <div class="button-row">
+                <button id="recording-save-btn" class="btn success" style="flex: 1;">Save</button>
+                <button id="recording-cancel-btn" class="btn" style="flex: 1;">Discard</button>
+              </div>
             </div>
+            <div id="recording-note" class="hint" style="display: none;"></div>
             <div id="recording-error" class="error-text"></div>
           </div>
         </div>

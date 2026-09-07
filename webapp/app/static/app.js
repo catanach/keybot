@@ -35,6 +35,19 @@ const api = {
   async previewScript(id) {
     return (await fetch(`/api/scripts/${id}/preview`)).json();
   },
+  async previewSteps(steps, name, ownId) {
+    return fetchJson("/api/scripts/preview", "POST", {
+      steps,
+      name,
+      own_id: ownId || null,
+    });
+  },
+  async nextRecordingName() {
+    return fetchJson("/api/recordings/next-name", "GET");
+  },
+  async saveRecording(data) {
+    return fetchJson("/api/recordings/save", "POST", data);
+  },
   async runScript(id, times) {
     return fetchJson(`/api/scripts/${id}/run`, "POST", { times: times || null });
   },
@@ -127,6 +140,11 @@ const main = document.getElementById("main");
 let allScripts = [];
 let lastRunScriptId = localStorage.getItem("lastRunScriptId") || null;
 let isEditingScript = false;
+// The saved script the editor is showing, as {id, name, rev}, or null for
+// the list, the history, and a brand-new script that has never been saved.
+// isEditingScript on its own says only that some editor is open, which is
+// not enough to know which script a recording would be joining.
+let openScript = null;
 let favorites = new Set(JSON.parse(localStorage.getItem("favorites") || "[]"));
 let recentScriptIds = JSON.parse(localStorage.getItem("recentScriptIds") || "[]"); // Track up to 5 recent scripts
 
@@ -152,7 +170,10 @@ document.addEventListener("keydown", (e) => {
     e.preventDefault();
     const recordingBtn = document.getElementById("recording-save-btn");
     const scriptBtn = document.getElementById("save-btn");
-    if (recordingBtn && recordingBtn.style.display !== "none") {
+    // The button lives inside the save panel now, and is only a way to
+    // save anything while that panel is up.
+    const panel = document.getElementById("recording-save-panel");
+    if (recordingBtn && panel && panel.style.display !== "none") {
       recordingBtn.click();
     } else if (scriptBtn && !isEditingScript) {
       scriptBtn.click();
@@ -186,18 +207,45 @@ function initSidebarSections() {
 // Recording mode
 // -----
 
-let recordingState = {
-  isRecording: false,
-  startTime: null,
-  lastKeyTime: null,
-  keystrokeCount: 0,
-  capturedScript: [],
-  elapsedTimer: null,
-};
+function emptyRecordingState() {
+  return {
+    isRecording: false,
+    startTime: null,
+    lastKeyTime: null,
+    keystrokeCount: 0,
+    capturedScript: [],
+    elapsedTimer: null,
+    // Seconds from the first key to the last, kept because the panel says
+    // how long the take was after the timer has stopped.
+    elapsedSeconds: 0,
+    // Whether any of these keys was sent to the PS5 as it was typed, which
+    // is what makes discarding them not an undo.
+    sentLive: false,
+    // The saved script this recording could join, captured when Stop is
+    // pressed rather than looked up at save time: by then the editor may
+    // have been closed or moved on, and "the open script" would be a
+    // different script or none.
+    target: null,
+  };
+}
+
+let recordingState = emptyRecordingState();
 
 const recordingToggleBtn = document.getElementById("recording-toggle-btn");
 const recordingSaveBtn = document.getElementById("recording-save-btn");
 const recordingCancelBtn = document.getElementById("recording-cancel-btn");
+const recordingSavePanel = document.getElementById("recording-save-panel");
+const recordingSaveSummary = document.getElementById("recording-save-summary");
+const recordingSaveNew = document.getElementById("recording-save-new");
+const recordingSaveTarget = document.getElementById("recording-save-target");
+const recordingSaveTargetRow = document.getElementById("recording-save-target-row");
+const recordingSaveTargetLabel = document.getElementById("recording-save-target-label");
+const recordingSaveTargetNote = document.getElementById("recording-save-target-note");
+const recordingSaveReuse = document.getElementById("recording-save-reuse");
+const recordingSaveReuseRow = document.getElementById("recording-save-reuse-row");
+const recordingNameRow = document.getElementById("recording-name-row");
+const recordingName = document.getElementById("recording-name");
+const recordingNote = document.getElementById("recording-note");
 const recordingStatus = document.getElementById("recording-status");
 const recordingStatusText = document.getElementById("recording-status-text");
 const recordingKeysCount = document.getElementById("recording-keys");
@@ -347,8 +395,21 @@ bindEvent("recording-save-btn", "click", async () => {
 });
 
 bindEvent("recording-cancel-btn", "click", () => {
+  const keys = recordingState.keystrokeCount;
+  const many = `${keys} recorded key${keys === 1 ? "" : "s"}`;
+  // Discarding is not an undo. Since the live switch shipped, these keys
+  // have already been felt by the PS5 -- menus opened, items bought -- and
+  // throwing the script away does not take any of that back.
+  const question = recordingState.sentLive
+    ? `Discard ${many}? They were already sent to the PS5 and can't be un-sent.`
+    : `Discard ${many}? There is no other copy of them.`;
+  if (!confirm(question)) return;
   resetRecording();
 });
+
+bindEvent("recording-save-new", "change", updateSaveChoice);
+bindEvent("recording-save-target", "change", updateSaveChoice);
+bindEvent("recording-save-reuse", "change", updateSaveChoice);
 
 bindEvent("recording-live", "change", () => {
   // Turning it off mid-recording stops the keys already waiting, not just
@@ -357,13 +418,94 @@ bindEvent("recording-live", "change", () => {
   updateRecordingBanner();
 });
 
+// -----
+// The recording draft
+//
+// A recording used to live only in this page's memory, so a reload part
+// way through one -- a stray Cmd+R, a browser tab restored -- took the
+// whole take with it, and the keys had already been pressed on the PS5 by
+// then. Every keystroke is written to this browser's own storage, and the
+// page picks the take back up when it opens.
+//
+// It is per-browser and unencrypted, like the favourites and the recent
+// list beside it. It holds key names and gaps, nothing else.
+// -----
+
+const RECORDING_DRAFT_KEY = "recordingDraft";
+
+function saveRecordingDraft() {
+  try {
+    localStorage.setItem(
+      RECORDING_DRAFT_KEY,
+      JSON.stringify({
+        steps: recordingState.capturedScript,
+        keystrokeCount: recordingState.keystrokeCount,
+        elapsedSeconds: recordingState.elapsedSeconds,
+        sentLive: recordingState.sentLive,
+        // What the recording would join. Kept from here on rather than only
+        // at Stop, because a reload is a stop nobody asked for.
+        target: recordingState.target || openScript,
+      })
+    );
+  } catch (e) {
+    console.warn("keybot: couldn't keep a copy of this recording: " + e.message);
+  }
+}
+
+function forgetRecordingDraft() {
+  try {
+    localStorage.removeItem(RECORDING_DRAFT_KEY);
+  } catch (e) {
+    console.warn("keybot: couldn't clear the saved recording: " + e.message);
+  }
+}
+
+// Picks up a take the page was holding when it was last closed. The
+// recording is not restarted -- the keys are put back and the save panel
+// is opened, which is where a reload interrupted her.
+async function restoreRecordingDraft() {
+  let draft = null;
+  try {
+    draft = JSON.parse(localStorage.getItem(RECORDING_DRAFT_KEY) || "null");
+  } catch (e) {
+    draft = null;
+  }
+  if (!draft || !Array.isArray(draft.steps) || draft.steps.length === 0) return;
+
+  recordingState = Object.assign(emptyRecordingState(), {
+    capturedScript: draft.steps,
+    keystrokeCount: draft.keystrokeCount || 0,
+    elapsedSeconds: draft.elapsedSeconds || 0,
+    sentLive: Boolean(draft.sentLive),
+    target: draft.target || null,
+  });
+  recordingKeysCount.textContent = recordingState.keystrokeCount;
+  recordingElapsed.textContent = formatElapsed(recordingState.elapsedSeconds);
+  recordingStatus.classList.remove("recording");
+  recordingStatus.classList.add("idle");
+  recordingStatusText.textContent = "Stopped";
+  recordingPreview.style.display = "block";
+  updateRecordingPreview();
+  await openSavePanel();
+}
+
+function formatElapsed(seconds) {
+  return seconds < 60
+    ? Math.round(seconds) + "s"
+    : Math.floor(seconds / 60) + "m " + Math.round(seconds % 60) + "s";
+}
+
 function startRecording() {
+  const wasRecorded = recordingState.keystrokeCount;
+  recordingState = emptyRecordingState();
   recordingState.isRecording = true;
   recordingState.startTime = Date.now();
   recordingState.lastKeyTime = recordingState.startTime;
-  recordingState.keystrokeCount = 0;
-  recordingState.capturedScript = [];
   recordingError.textContent = "";
+  showRecordingElement(recordingNote, false);
+  // Starting a new take replaces whatever was on screen, so the copy kept
+  // for a reload goes with it rather than coming back at the next reload.
+  if (wasRecorded) forgetRecordingDraft();
 
   recordingToggleBtn.textContent = "Stop Recording";
   recordingToggleBtn.classList.add("danger");
@@ -373,17 +515,16 @@ function startRecording() {
   recordingStatusText.textContent = "Recording...";
   recordingPreview.style.display = "block";
   recordingPreview.textContent = "[]";
-  recordingSaveBtn.style.display = "none";
-  recordingCancelBtn.style.display = "none";
+  recordingKeysCount.textContent = "0";
+  recordingElapsed.textContent = "0s";
+  showRecordingElement(recordingSavePanel, false);
   resetLiveSend();
   updateRecordingBanner();
 
   // Start elapsed time counter
   recordingState.elapsedTimer = setInterval(() => {
     const elapsed = (Date.now() - recordingState.startTime) / 1000;
-    recordingElapsed.textContent = elapsed < 60
-      ? Math.round(elapsed) + "s"
-      : Math.floor(elapsed / 60) + "m " + Math.round(elapsed % 60) + "s";
+    recordingElapsed.textContent = formatElapsed(elapsed);
   }, 100);
 
   // Listen for keypresses (this is a simplified version)
@@ -396,6 +537,10 @@ function stopRecording() {
   recordingState.isRecording = false;
   document.removeEventListener("keydown", recordKeystroke);
   clearInterval(recordingState.elapsedTimer);
+  recordingState.elapsedTimer = null;
+  // The script this recording could become part of, taken now: the editor
+  // may be closed or showing something else by the time Save is pressed.
+  recordingState.target = recordingState.target || openScript;
 
   recordingToggleBtn.textContent = "Start Recording";
   recordingToggleBtn.classList.add("primary");
@@ -403,9 +548,139 @@ function stopRecording() {
   recordingStatus.classList.remove("recording");
   recordingStatus.classList.add("idle");
   recordingStatusText.textContent = "Stopped";
-  recordingSaveBtn.style.display = "inline-block";
-  recordingCancelBtn.style.display = "inline-block";
   updateRecordingBanner();
+
+  if (recordingState.capturedScript.length === 0) {
+    // Nothing was typed, so there is nothing to name or to save.
+    resetRecording();
+    return;
+  }
+  saveRecordingDraft();
+  openSavePanel();
+}
+
+// -----
+// The save panel
+//
+// Shown when a recording stops: what was caught, where it should go, and
+// what to call it. "Part of X" means the recording is saved as its own
+// script and X gets a step that runs it, so the take stays something that
+// can be run and reused on its own rather than being melted into X.
+// -----
+
+// Between whatever X already did and the recorded keys. There is always
+// something to wait for at a join, and a gap that is there and editable is
+// easier to correct than one that was never put in. The server puts the
+// same gap in when it does the joining itself.
+const JOINING_WAIT_SECONDS = 1.0;
+const JOINING_WAIT_NOTE = "Gap before the recorded keys";
+
+// Only the newest panel may write to the fields. Opening one starts a
+// couple of requests, and a panel that has since been replaced -- by a
+// discard, or a new recording -- must not land its answers in it.
+let savePanelToken = 0;
+
+function showRecordingElement(el, shown) {
+  if (!el) return;
+  el.style.display = shown ? "block" : "none";
+}
+
+function savingToTarget() {
+  return Boolean(
+    recordingState.target &&
+      recordingSaveTarget &&
+      recordingSaveTarget.checked === true &&
+      !recordingSaveTarget.disabled
+  );
+}
+
+// Whether the recording becomes a script of its own with a Run step
+// pointing at it, rather than being pasted in as raw steps. That is what
+// the checkbox turns off, and it is on unless she says otherwise.
+function wantsRunStep() {
+  return !recordingSaveReuse || recordingSaveReuse.checked !== false;
+}
+
+function updateSaveChoice() {
+  const toTarget = savingToTarget();
+  showRecordingElement(recordingSaveReuseRow, toTarget);
+  // Appending the raw steps makes no new script, so there is nothing to name.
+  showRecordingElement(recordingNameRow, !toTarget || wantsRunStep());
+}
+
+async function openSavePanel() {
+  if (!recordingSavePanel) {
+    // A page older than this app, with no panel on it. Say so here rather
+    // than throwing part way through and leaving a recording that cannot
+    // be saved and does not say why.
+    recordingError.textContent =
+      "This page is older than the app, so there is nowhere to ask where the " +
+      "recording should go. Reload the page and record it again.";
+    return;
+  }
+  const token = ++savePanelToken;
+  const keys = recordingState.keystrokeCount;
+  const target = recordingState.target;
+
+  recordingSaveSummary.textContent =
+    `Recorded ${keys} key${keys === 1 ? "" : "s"} over ` +
+    `${formatElapsed(recordingState.elapsedSeconds)}.`;
+  recordingSaveNew.checked = true;
+  recordingSaveTarget.checked = false;
+  recordingSaveTarget.disabled = false;
+  recordingSaveReuse.checked = true;
+  recordingSaveTargetLabel.textContent = target ? `Part of “${target.name}”` : "";
+  showRecordingElement(recordingSaveTargetRow, Boolean(target));
+  showRecordingElement(recordingSaveTargetNote, false);
+  showRecordingElement(recordingSavePanel, true);
+  updateSaveChoice();
+
+  recordingName.value = "";
+  try {
+    const suggested = await api.nextRecordingName();
+    if (token !== savePanelToken) return;
+    recordingName.value = suggested.name;
+  } catch (e) {
+    if (token !== savePanelToken) return;
+    // A name still has to be given, so say what happened rather than
+    // leaving an empty box that refuses to save.
+    recordingName.value = "Recording";
+    recordingError.textContent =
+      "Couldn't ask the webapp for the next free name: " + e.message;
+  }
+  // Selected, not just focused: the suggested name is a starting point, and
+  // typing over it should not mean clearing it first.
+  if (typeof recordingName.focus === "function") recordingName.focus();
+  if (typeof recordingName.select === "function") recordingName.select();
+
+  if (target) await checkTargetStillThere(token);
+}
+
+// The script the recording would join can be deleted or renamed between
+// Stop and Save. Ask now, so the choice on screen is a choice that exists.
+async function checkTargetStillThere(token) {
+  const target = recordingState.target;
+  let script = null;
+  try {
+    script = await api.getScript(target.id);
+  } catch (e) {
+    script = null;
+  }
+  if (token !== savePanelToken) return;
+  if (script && script.id) {
+    target.name = script.name;
+    target.rev = script.rev;
+    recordingSaveTargetLabel.textContent = `Part of “${script.name}”`;
+    return;
+  }
+  recordingSaveTarget.disabled = true;
+  recordingSaveTarget.checked = false;
+  recordingSaveNew.checked = true;
+  recordingSaveTargetNote.textContent =
+    `“${target.name}” isn't there any more, so this recording can only be ` +
+    `saved on its own.`;
+  showRecordingElement(recordingSaveTargetNote, true);
+  updateSaveChoice();
 }
 
 // Browser key events do not use the same names as the keyboard library on
@@ -533,12 +808,19 @@ function recordKeystroke(event) {
 
   recordingState.capturedScript.push(["press", keyCode, LIVE_HOLD]);
   recordingState.keystrokeCount++;
+  recordingState.elapsedSeconds = (now - recordingState.startTime) / 1000;
   // The script has the key either way. Sending it is a separate thing that
   // is allowed to fail without changing what was recorded.
-  if (liveSendWanted()) queueLiveKey(keyCode);
+  if (liveSendWanted()) {
+    recordingState.sentLive = true;
+    queueLiveKey(keyCode);
+  }
 
   recordingKeysCount.textContent = recordingState.keystrokeCount;
   updateRecordingPreview();
+  // Written on every key, not at the end: the take that matters is the one
+  // that has been typed so far.
+  saveRecordingDraft();
 }
 
 function updateRecordingPreview() {
@@ -554,41 +836,164 @@ function updateRecordingPreview() {
   recordingPreview.scrollTop = recordingPreview.scrollHeight;
 }
 
+// Whether the editor on screen is showing the very script this recording
+// was captured against. Only then can the Run step be dropped into it
+// instead of being written to the server: anything else would be putting
+// a step into a script nobody is looking at.
+function editorIsShowingTarget() {
+  return Boolean(
+    openScript && recordingState.target && openScript.id === recordingState.target.id
+  );
+}
+
 async function saveRecordedScript() {
-  if (recordingState.capturedScript.length === 0) {
+  const steps = recordingState.capturedScript;
+  if (steps.length === 0) {
     recordingError.textContent = "No keystrokes recorded.";
     return;
   }
+  const toTarget = savingToTarget();
+  const addRunStep = !toTarget || wantsRunStep();
+  const name = recordingName ? recordingName.value.trim() : "";
+  if (addRunStep && !name) {
+    recordingError.textContent = "Give the recording a name.";
+    return;
+  }
 
-  const name = `Recording ${new Date().toLocaleString()}`;
+  recordingError.textContent = "";
+  showRecordingElement(recordingNote, false);
+  recordingSaveBtn.disabled = true;
+  recordingSaveBtn.textContent = "Saving...";
   try {
-    // Optimistic UI: disable button and show saving state
-    recordingSaveBtn.disabled = true;
-    recordingSaveBtn.textContent = "Saving...";
-    const saved = await api.createScript({
-      name,
-      description: "Script recorded from keyboard input",
-      steps: recordingState.capturedScript
-    });
-    recordingError.textContent = "";
-    resetRecording();
-    await renderList();
+    if (toTarget && editorIsShowingTarget()) {
+      await saveIntoOpenEditor(steps, name, addRunStep);
+    } else {
+      await saveThroughServer(steps, name, toTarget, addRunStep);
+    }
   } catch (e) {
-    recordingError.textContent = "Couldn't save: " + e.message;
+    // Nothing on this path clears the recording. Whatever went wrong, the
+    // keys she typed are the one thing here that cannot be got back.
+    recordingError.textContent = e.message;
+  } finally {
     recordingSaveBtn.disabled = false;
     recordingSaveBtn.textContent = "Save";
   }
 }
 
+// The editor is open on the script being joined, and it may be holding
+// changes that have never been saved. Those are hers, so nothing is
+// written over them: the new steps go in as rows, and the script is saved
+// when she saves it.
+async function saveIntoOpenEditor(steps, name, addRunStep) {
+  const stepsList = document.getElementById("steps-list");
+  if (!stepsList) {
+    throw new Error(
+      "The editor isn't open any more, so there is nowhere to put the step. " +
+      "Reload the page and save the recording again."
+    );
+  }
+  const current = readSteps(stepsList);
+  if (current.unresolved) {
+    throw new Error(
+      "One step in the editor still needs a key, so the recording can't be " +
+      "added yet. Pick a key for it and press Save again."
+    );
+  }
+
+  // Measured against the rows that are really there. Asking the server
+  // about the stored script would miss every unsaved row, so it would pass
+  // while what she actually pushes to the Pico is over the limit.
+  const check = await api.previewSteps(current.steps, openScript.name, openScript.id);
+  if (!check.ok) {
+    throw new Error("Couldn't check the size of the script: " + check.error);
+  }
+  // The joining wait, plus either the run step (one repeat holding the
+  // recording) or the recorded steps themselves.
+  const added = addRunStep ? 2 + steps.length : 1 + steps.length;
+  const total = check.step_count + added;
+  if (total > check.limit) {
+    throw new Error(
+      `That would leave “${openScript.name}” at ${total} steps, and the Pico ` +
+      `can hold ${check.limit}. Nothing was saved. Shorten the recording, or ` +
+      `take something out of “${openScript.name}” first.`
+    );
+  }
+
+  let note;
+  if (addRunStep) {
+    const saved = await api.createScript({ name, description: "", steps });
+    // The Run row's dropdown is built from this list, so it has to know
+    // about the recording before the row is made.
+    allScripts = await api.listScripts();
+    refreshRunSelect();
+    refreshRecentScripts();
+    stepsList.appendChild(
+      buildStepRow(["wait", JOINING_WAIT_SECONDS], openScript.id, JOINING_WAIT_NOTE)
+    );
+    stepsList.appendChild(buildStepRow(["run", saved.id, 1], openScript.id));
+    note =
+      `Saved as “${saved.name}” and added a Run step to the editor. ` +
+      `Save “${openScript.name}” to keep it.`;
+  } else {
+    stepsList.appendChild(
+      buildStepRow(["wait", JOINING_WAIT_SECONDS], openScript.id, JOINING_WAIT_NOTE)
+    );
+    for (const step of steps) {
+      stepsList.appendChild(buildStepRow(step, openScript.id));
+    }
+    note =
+      `Added the recorded keys to the editor. Save “${openScript.name}” to ` +
+      `keep them.`;
+  }
+  resetRecording();
+  recordingNote.textContent = note;
+  showRecordingElement(recordingNote, true);
+}
+
+// Everything else: one request, so the order of the two writes and what a
+// half-done save leaves behind are decided by the server rather than here.
+async function saveThroughServer(steps, name, toTarget, addRunStep) {
+  const target = toTarget ? recordingState.target : null;
+  const result = await api.saveRecording({
+    name,
+    description: "",
+    steps,
+    target_id: target ? target.id : null,
+    target_name: target ? target.name : null,
+    target_rev: target && target.rev !== undefined ? target.rev : null,
+    add_run_step: addRunStep,
+  });
+
+  resetRecording();
+  let note;
+  if (result.warning) {
+    note = result.warning;
+  } else if (result.target && result.script) {
+    note = `Saved as “${result.script.name}” and added a Run step to “${result.target.name}”.`;
+  } else if (result.target) {
+    note = `Added the recorded keys to the end of “${result.target.name}”.`;
+  } else {
+    note = `Saved as “${result.script.name}”.`;
+  }
+  recordingNote.textContent = note;
+  showRecordingElement(recordingNote, true);
+
+  allScripts = await api.listScripts();
+  refreshRunSelect();
+  refreshRecentScripts();
+  // Saving a recording used to redraw the list whatever was on screen,
+  // which threw away an editor full of unsaved steps.
+  if (!isEditingScript) await renderList();
+}
+
 function resetRecording() {
-  recordingState = {
-    isRecording: false,
-    startTime: null,
-    lastKeyTime: null,
-    keystrokeCount: 0,
-    capturedScript: [],
-    elapsedTimer: null,
-  };
+  if (recordingState.elapsedTimer !== null) {
+    clearInterval(recordingState.elapsedTimer);
+  }
+  document.removeEventListener("keydown", recordKeystroke);
+  recordingState = emptyRecordingState();
+  forgetRecordingDraft();
+  savePanelToken++;
   recordingToggleBtn.textContent = "Start Recording";
   recordingToggleBtn.classList.add("primary");
   recordingToggleBtn.classList.remove("danger");
@@ -599,8 +1004,8 @@ function resetRecording() {
   recordingElapsed.textContent = "0s";
   recordingPreview.style.display = "none";
   recordingPreview.textContent = "";
-  recordingSaveBtn.style.display = "none";
-  recordingCancelBtn.style.display = "none";
+  showRecordingElement(recordingSavePanel, false);
+  showRecordingElement(recordingNote, false);
   recordingError.textContent = "";
   resetLiveSend();
   updateRecordingBanner();
@@ -700,6 +1105,7 @@ function filterAndDisplayScripts() {
 
 async function renderList() {
   isEditingScript = false;
+  openScript = null;
   allScripts = await api.listScripts();
   refreshRunSelect();
   refreshRecentScripts();
@@ -781,8 +1187,11 @@ async function renderEditor(scriptId) {
   isEditingScript = true;
   const isNew = scriptId === null;
   const script = isNew
-    ? { id: null, name: "", description: "", steps: [] }
+    ? { id: null, name: "", description: "", rev: null, steps: [] }
     : await api.getScript(scriptId);
+  // A recording stopped while this is open can be saved as part of this
+  // script, which needs its id and its name, not just "an editor is open".
+  openScript = isNew ? null : { id: script.id, name: script.name, rev: script.rev };
 
   main.innerHTML = "";
   const editor = document.createElement("div");
@@ -821,6 +1230,7 @@ async function renderEditor(scriptId) {
   };
   editor.querySelector("#cancel-btn").onclick = () => {
     isEditingScript = false;
+    openScript = null;
     renderList();
   };
   editor.querySelector("#save-btn").onclick = async () => {
@@ -844,7 +1254,10 @@ async function renderEditor(scriptId) {
       if (isNew) {
         saved = await api.createScript(data);
       } else {
-        saved = await api.updateScript(script.id, data);
+        // The rev this editor was opened on. If the script has been saved
+        // since -- another tab, a recording joined onto it -- the server
+        // refuses rather than quietly dropping whatever that save did.
+        saved = await api.updateScript(script.id, Object.assign({ rev: script.rev }, data));
       }
       await showPreview(saved.id, editor.querySelector("#preview-box"));
       allScripts = await api.listScripts();
@@ -1101,7 +1514,14 @@ function setUpKeyPicker(node, initialName) {
   setKey(initialName || "");
 }
 
-function buildStepRow(step, ownScriptId) {
+// The one place a step row is made. Everything that puts a row on screen
+// comes through here -- the editor, the Add step button, a recording being
+// joined onto a script -- so a row is a row wherever it came from, with the
+// same key picker and the same checks.
+//
+// note is an optional line under the row, for a step that needs saying why
+// it is there rather than just what it does.
+function buildStepRow(step, ownScriptId, note) {
   const kind = step[0];
   const tpl = document.getElementById(`tpl-step-${kind}`) || document.getElementById("tpl-step-press");
   const node = tpl.content.cloneNode(true).querySelector(".step");
@@ -1118,10 +1538,17 @@ function buildStepRow(step, ownScriptId) {
     node.querySelector(".step-times").value = step[2] ?? 1;
   }
 
+  if (note) {
+    const label = document.createElement("div");
+    label.className = "step-note";
+    label.textContent = note;
+    node.appendChild(label);
+  }
+
   node.querySelector(".step-kind").onchange = (e) => {
     const newKind = e.target.value;
     const defaults = { press: ["press", "", 0.1], wait: ["wait", 1], run: ["run", "", 1] };
-    const replacement = buildStepRow(defaults[newKind], ownScriptId);
+    const replacement = buildStepRow(defaults[newKind], ownScriptId, note);
     node.replaceWith(replacement);
   };
   node.querySelector(".step-remove").onclick = () => node.remove();
@@ -1265,6 +1692,7 @@ function buildHistoryRow(record) {
 
 async function renderHistory() {
   isEditingScript = false;
+  openScript = null;
   let records;
   try {
     records = await api.getHistory();
@@ -1880,6 +2308,10 @@ function escapeAttr(str) {
   await loadKeycodes();
   await renderList();
   await loadSettings();
+  // A recording the page was holding when it was last closed. Put back
+  // after the list, because the save panel asks the server for a name that
+  // does not clash with anything in it.
+  await restoreRecordingDraft();
 
   // Add keyboard shortcut hints
   const isMac = /Mac|iPhone|iPad|iPod/.test(navigator.platform);

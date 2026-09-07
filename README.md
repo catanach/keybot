@@ -118,13 +118,14 @@ It keeps its own `dev/script.json`, separate from the one on the Pico, so testin
 
 ### Tests
 
-Six things to run, none of which needs the Pico:
+Seven things to run, none of which needs the Pico:
 
 ```
-python3 -m unittest discover -s dev   # the script logic, repeats, compiling, what gets deployed, /press
+python3 -m unittest discover -s dev   # script logic, repeats, compiling, deploys, /press, saving a recording
 python3 dev/repro_lockup.py           # the device recovers from bad scripts
 node dev/test_picker.js               # the editor's key picker
 node dev/test_recording.js            # sending recorded keys to the device
+node dev/test_recording_save.js       # where a finished recording goes
 node dev/test_startup.js              # the page still works with an element missing
 node dev/test_panel.js                # what the run panel says during a nested run
 ```
@@ -154,6 +155,16 @@ device that can be made slow, unreachable, or busy, which is how the awkward
 cases -- typing faster than Wi-Fi, a board that stops answering mid-recording --
 get tested without unplugging anything.
 
+`dev/test_recording_save.js` covers where a finished recording goes: the panel
+that asks, the script it can be joined onto, and every way that can go wrong.
+It boots the page twice over one browser storage, which is the only way to
+check that a take survives a reload -- by then the keys have already been
+pressed on the PS5, so losing the script is losing the only record of what was
+done. `dev/test_recording_save.py` covers the same feature from the other side,
+where the writing actually happens: a second write that fails after the first
+one worked, a script changed in another tab, a script deleted, and a join that
+would not fit on the board.
+
 `dev/test_startup.js` loads the real `app.js` against a page that is missing an
 element it expects, and checks that the rest of the page still comes up. That
 happened for real: a browser held an `index.html` from before the "send keys as
@@ -167,7 +178,7 @@ that control and nothing else.
 The webapp has its own tests, which need pytest (a development tool -- it is deliberately kept out of `webapp/requirements.txt` so it never ships inside the container image):
 
 ```
-python3 -m pytest webapp/tests   # the run history, the key list, and how the page is served
+python3 -m pytest webapp/tests   # the run history, the key list, how the page is served, saving a recording
 ```
 
 ## Management webapp
@@ -198,6 +209,9 @@ Your scripts are saved as JSON files under `webapp/data/scripts/` (created autom
 - A persistent panel on the right lets you pick a script, optionally give it a repeat count, and hit Start or Stop. While something is running it shows where the run has got to -- `part 2 of 3`, `Gathering, 738 of 1000`, `about 1h 12m left` -- and which step it is on inside that part. The time left comes from the device, which is the only thing that knows which repeat it is on, and is counted down between checks. A script that isn't simply a list of other scripts has no parts to count, so the panel shows the step number instead of inventing them.
 - Starting a script while one is already running is refused, in those words: the device will not take a new program mid-run, because that is what would let a job be swapped out part way through a repeat. The panel keeps checking the device from the moment the page loads until it closes, so opening it partway through an overnight run shows that run -- it does not have to be the page that started it.
 - The Record section captures what you type into a script, and -- with "Send keys to the PS5 while I record" switched on, which is the default -- sends each key to the device as you press it, so you can see what you are recording happen on the PS5. Keys are sent one at a time, in the order they were typed. They go over Wi-Fi, so live presses lag slightly; the timings written into the script come from the browser's clock and are unaffected, so replaying the script is as accurate as it ever was. If the board stops answering, recording carries on and says so above the preview, and a key that failed to send is still in the script. If typing gets more than about ten keys ahead of the board, sending stops for the rest of that recording rather than pressing keys long after you typed them. The switch is hidden entirely if the firmware on the board is older than this feature.
+- Stopping a recording asks where it should go: a new script, or part of the script the editor was showing when you pressed Stop. "Part of it" does not paste the keys onto the end -- the recording is saved as its own named script and a `Run` step for it is added to that script, so the take stays something you can run, rename and reuse on its own. The checkbox under it turns that off and appends the raw steps instead. Either way a `Wait 1.0s` goes in at the join, as an ordinary editable step, because there is always something to wait for there. The name is filled in with the first free `Recording N` and selected, so typing replaces it; the description is left empty. If the script being joined is open in the editor, the new steps land there as rows for you to check and save -- nothing you have not saved yourself is ever written over.
+- Every script carries a `rev` that goes up on each save. Whoever saves says which rev they started from, so a second tab that saved in the meantime is not silently overwritten: the save is refused, in those words, and nothing is written. Adding a `Run` step to a script is also checked against the 500 steps the board can hold -- counting the rows in the editor, saved or not -- and refused with the real number rather than found out at 3am.
+- A recording is kept in the browser's own storage as you type, so a reload part way through one picks it back up where it was. Discarding asks first, and says that the keys have already been sent to the PS5 and cannot be un-sent.
 - The History view lists the last 50 runs: which script, how it ended (finished, you stopped it, failed, lost contact, or "stop requested, unconfirmed" -- we asked it to stop and then lost the board before it said it had), how many loops it got through, and why it stopped if something went wrong. The webapp watches the device itself every 5 seconds, so a run is recorded whether or not a browser is open -- including one that ends overnight. History lives in `webapp/data/history.json`.
 
 ### Pointing it at the Pico or the dev server

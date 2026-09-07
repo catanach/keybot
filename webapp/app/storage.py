@@ -9,6 +9,7 @@ A script looks like:
     "id": "a1b2c3d4",
     "name": "Grind loop",
     "description": "Opens the menu and mashes through it.",
+    "rev": 3,
     "steps": [
         ["press", "ENTER", 0.1],
         ["wait", 5.5],
@@ -20,6 +21,13 @@ Step types:
     ["press", keycode_name, hold_seconds]
     ["wait", seconds]
     ["run", script_id, times]   -- runs another script this many times, inline
+
+"rev" counts how many times a script has been written. Whoever saves says
+which rev they started from, and a save based on a stale one is refused
+rather than quietly overwriting whatever happened in between -- two tabs
+open on the same script is not unusual, and one of them silently losing
+its steps is not something you would ever notice. Scripts written before
+rev existed read as rev 1.
 """
 
 import json
@@ -28,16 +36,26 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-DATA_DIR = Path(os.environ.get("KEYBOT_DATA_DIR", "/data"))
-SCRIPTS_DIR = DATA_DIR / "scripts"
+class RevMismatch(Exception):
+    """Raised when a save started from a rev that is no longer the current
+    one, which means someone else saved the same script in between."""
+
+
+def scripts_dir() -> Path:
+    """Where the scripts live, worked out on every call rather than when
+    this module is imported -- the way the run history does it. A test that
+    points KEYBOT_DATA_DIR at a temporary directory has usually imported
+    this module long before, and a path fixed at import time would send
+    that test's writes into the real scripts."""
+    return Path(os.environ.get("KEYBOT_DATA_DIR", "/data")) / "scripts"
 
 
 def _ensure_dir():
-    SCRIPTS_DIR.mkdir(parents=True, exist_ok=True)
+    scripts_dir().mkdir(parents=True, exist_ok=True)
 
 
 def _path(script_id: str) -> Path:
-    return SCRIPTS_DIR / f"{script_id}.json"
+    return scripts_dir() / f"{script_id}.json"
 
 
 def new_id() -> str:
@@ -48,7 +66,7 @@ def list_scripts() -> list[dict]:
     """Returns a summary of every script (no steps), sorted by name."""
     _ensure_dir()
     scripts = []
-    for path in SCRIPTS_DIR.glob("*.json"):
+    for path in scripts_dir().glob("*.json"):
         try:
             data = json.loads(path.read_text())
         except (json.JSONDecodeError, OSError):
@@ -58,6 +76,7 @@ def list_scripts() -> list[dict]:
                 "id": data["id"],
                 "name": data.get("name", "(untitled)"),
                 "description": data.get("description", ""),
+                "rev": data.get("rev", 1),
                 "step_count": len(data.get("steps", [])),
             }
         )
@@ -71,22 +90,42 @@ def get_script(script_id: str) -> Optional[dict]:
     if not path.exists():
         return None
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (json.JSONDecodeError, OSError):
         return None
+    data.setdefault("rev", 1)
+    return data
 
 
 def save_script(
-    script_id: Optional[str], name: str, description: str, steps: list
+    script_id: Optional[str],
+    name: str,
+    description: str,
+    steps: list,
+    expected_rev: Optional[int] = None,
 ) -> dict:
-    """Creates a new script (script_id is None) or overwrites an existing one."""
+    """Creates a new script (script_id is None) or overwrites an existing one.
+
+    expected_rev is the rev the caller started from. Give it and a save that
+    would overwrite someone else's raises RevMismatch and writes nothing;
+    leave it out and the save goes through whatever the current rev is."""
     _ensure_dir()
     if script_id is None:
         script_id = new_id()
+        rev = 1
+    else:
+        existing = get_script(script_id)
+        current_rev = existing["rev"] if existing else 0
+        if expected_rev is not None and expected_rev != current_rev:
+            raise RevMismatch(
+                f"expected rev {expected_rev}, but the stored script is at {current_rev}"
+            )
+        rev = current_rev + 1
     data = {
         "id": script_id,
         "name": name,
         "description": description or "",
+        "rev": rev,
         "steps": steps,
     }
     _path(script_id).write_text(json.dumps(data, indent=2))

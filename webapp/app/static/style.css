@@ -373,6 +373,49 @@ body {
   margin-bottom: 10px;
 }
 
+/* Where a finished recording goes */
+
+.recording-save-panel {
+  background: var(--panel-secondary);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.recording-save-summary {
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.recording-save-choice {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+
+.recording-save-choice input {
+  margin: 3px 0 0 0;
+}
+
+.recording-save-choice input:disabled + span {
+  color: var(--muted);
+}
+
+/* Why a step is there, under the row that does it. */
+.step-note {
+  grid-column: 1 / -1;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 /* Sidebar buttons */
 
 .sidebar-input {

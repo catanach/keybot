@@ -39,5 +39,5 @@ def test_a_changed_file_gets_a_different_url(tmp_path, monkeypatch):
 
 def test_the_page_is_never_reused_without_asking():
     response = asyncio.run(main.index(None))
-    assert response.headers["cache-control"] == "no-cache"
+    assert response.headers["cache-control"] == "no-store"
     assert b"/static/app.js?v=" in response.body

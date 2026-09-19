@@ -10,13 +10,16 @@
 #   {"type":"issue",   "title":"...", "body":"...", "labels":"a,b"}
 #   {"type":"comment", "issue":12,    "body":"..."}
 #
+# Any job may carry an optional "repo":"owner/name" to target a repository
+# other than the default below. teaim jobs use this.
+#
 # Results, including the URL of anything created, go to gh-bridge.log.
 
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:$PATH"
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 QUEUE="webapp/.gh-queue"
 LOG="webapp/gh-bridge.log"
-REPO="catanach/keybot"
+DEFAULT_REPO="catanach/keybot"
 
 mkdir -p "$QUEUE/done"
 
@@ -41,13 +44,15 @@ jobs=("$QUEUE"/*.json)
   for job in "${jobs[@]}"; do
     name="$(basename "$job")"
     type=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('type',''))" "$job" 2>/dev/null)
+    repo=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('repo',''))" "$job" 2>/dev/null)
+    [ -z "$repo" ] && repo="$DEFAULT_REPO"
     body_file="$QUEUE/.body.tmp"
     python3 -c "import json,sys;open(sys.argv[2],'w').write(json.load(open(sys.argv[1])).get('body',''))" "$job" "$body_file" 2>/dev/null
 
     if [ "$type" = "issue" ]; then
       title=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('title',''))" "$job")
       labels=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('labels',''))" "$job")
-      args=(issue create --repo "$REPO" --title "$title" --body-file "$body_file")
+      args=(issue create --repo "$repo" --title "$title" --body-file "$body_file")
       [ -n "$labels" ] && args+=(--label "$labels")
       if url=$(gh "${args[@]}" 2>&1); then
         echo "$name -> created $url"
@@ -57,7 +62,7 @@ jobs=("$QUEUE"/*.json)
       fi
     elif [ "$type" = "comment" ]; then
       num=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1])).get('issue',''))" "$job")
-      if url=$(gh issue comment "$num" --repo "$REPO" --body-file "$body_file" 2>&1); then
+      if url=$(gh issue comment "$num" --repo "$repo" --body-file "$body_file" 2>&1); then
         echo "$name -> commented on #$num $url"
       else
         echo "$name -> FAILED: $url"

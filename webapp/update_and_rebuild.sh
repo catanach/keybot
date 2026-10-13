@@ -38,6 +38,9 @@ LOG="webapp/update.log"
   # and signed-in credentials.
   bash webapp/gh-bridge.sh || echo "gh-bridge failed, continuing"
 
+  # Run the Pico diagnostic if an agent has asked for one. No-op otherwise.
+  bash webapp/pico-doctor.sh || echo "pico-doctor failed, continuing"
+
   # Push the teaim working tree. Separate repo, same reason as gh-bridge:
   # the agent shells cannot reach github.com and this runs where it can.
   bash webapp/teaim-sync.sh || echo "teaim-sync failed, continuing"

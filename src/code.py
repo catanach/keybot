@@ -50,16 +50,34 @@ def bad_request(request, message):
     return Response(request, "error: " + message, status=(400, "Bad Request"))
 
 
-def press_fn(keycode_name, hold):
+def keycode_for(keycode_name):
     keycode = getattr(Keycode, keycode_name, None)
     if keycode is None:
         raise ValueError("there is no key called '{}'".format(keycode_name))
+    return keycode
+
+
+def press_fn(keycode_name, hold):
+    # Blocks for the whole hold, so nothing is served while the key is
+    # down. Used by /press, where the handler already runs inside
+    # server.poll() and MAX_HOLD bounds the hold to a second. A recorded
+    # hold has no such bound and goes through key_down_fn and key_up_fn
+    # below instead, so the board keeps answering.
+    keycode = keycode_for(keycode_name)
     keyboard.press(keycode)
     try:
         time.sleep(hold)
     finally:
         # An interrupted wait must not leave the key down.
         keyboard.release(keycode)
+
+
+def key_down_fn(keycode_name):
+    keyboard.press(keycode_for(keycode_name))
+
+
+def key_up_fn(keycode_name):
+    keyboard.release(keycode_for(keycode_name))
 
 
 try:
@@ -120,7 +138,15 @@ try:
     # A client that connects and says nothing must not park the main loop.
     server.socket_timeout = 2
 
-    runner = ScriptRunner(SCRIPT, press_fn, None, keyboard.release_all, server.poll)
+    runner = ScriptRunner(
+        SCRIPT,
+        press_fn,
+        None,
+        keyboard.release_all,
+        server.poll,
+        key_down_fn=key_down_fn,
+        key_up_fn=key_up_fn,
+    )
     runner.sleep_fn = make_sleep_fn(server, runner)
 
     @server.route("/start")

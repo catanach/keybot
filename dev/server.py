@@ -65,12 +65,32 @@ except (OSError, ValueError):
     SCRIPT = DEFAULT_SCRIPT
 
 
-def press_fn(keycode_name, hold):
+# What a real board would be holding down right now. Mirrors the Pico,
+# where a hold is a key down, a polling wait, then a key up.
+keys_down = []
+
+
+def check_key(keycode_name):
     # No real key is pressed here, but an unknown key name has to fail the
     # same way it does on the Pico, where it's an error from Keycode.
     if keycode_name not in KEYCODE_NAMES:
         raise ValueError("there is no key called '{}'".format(keycode_name))
+
+
+def press_fn(keycode_name, hold):
+    check_key(keycode_name)
     time.sleep(hold)
+
+
+def key_down_fn(keycode_name):
+    check_key(keycode_name)
+    keys_down.append(keycode_name)
+
+
+def key_up_fn(keycode_name):
+    check_key(keycode_name)
+    if keycode_name in keys_down:
+        keys_down.remove(keycode_name)
 
 
 def sleep_fn(duration):
@@ -84,9 +104,9 @@ def sleep_fn(duration):
 
 
 def release_fn():
-    # Nothing is really held down here; the Pico releases every key at
-    # this point, so the shape of a run matches.
-    pass
+    # The Pico releases every key at this point, so the shape of a run
+    # matches. With holds there is now something real to drop.
+    del keys_down[:]
 
 
 # tick_fn mirrors the firmware: the real board serves HTTP here. This dev
@@ -100,7 +120,15 @@ def tick_fn():
     tick_count[0] += 1
 
 
-runner = ScriptRunner(SCRIPT, press_fn, sleep_fn, release_fn, tick_fn)
+runner = ScriptRunner(
+    SCRIPT,
+    press_fn,
+    sleep_fn,
+    release_fn,
+    tick_fn,
+    key_down_fn=key_down_fn,
+    key_up_fn=key_up_fn,
+)
 
 # Matches code.py: the most recent problem outside of a script run,
 # reported by /status.

@@ -89,12 +89,30 @@ def program_from_saved(data):
 
 
 class ScriptRunner:
-    def __init__(self, script, press_fn, sleep_fn, release_fn=None, tick_fn=None):
+    def __init__(
+        self,
+        script,
+        press_fn,
+        sleep_fn,
+        release_fn=None,
+        tick_fn=None,
+        key_down_fn=None,
+        key_up_fn=None,
+    ):
         self.script = script
         self.press_fn = press_fn  # press_fn(keycode_name, hold_seconds)
         self.sleep_fn = sleep_fn  # sleep_fn(seconds), returns early on stop
         self.release_fn = release_fn  # release_fn(), lets go of every key
         self.tick_fn = tick_fn  # before every step; serves the web server
+        # Holding a key is a wait with a key down over it. Given these two,
+        # a press becomes key_down_fn, sleep_fn, key_up_fn, which means the
+        # hold goes through the same polling wait a "wait" step uses: the
+        # board keeps answering and Stop cuts it short. press_fn blocks for
+        # the whole hold, which was fine while holds were 0.1s and made the
+        # board unreachable for the length of a recorded hold. Without both
+        # of these the old path is used unchanged.
+        self.key_down_fn = key_down_fn
+        self.key_up_fn = key_up_fn
 
         self.running = False
         self.stop_requested = False
@@ -191,6 +209,23 @@ class ScriptRunner:
                 return 'a "wait" step needs a number of seconds'
             return None
         return "unknown step type '{}'".format(step[0])
+
+    def _hold(self, key_name, seconds):
+        """Holds one key down for a while.
+
+        With key_down_fn and key_up_fn the hold is a sleep_fn wait between
+        them, so the web server keeps being served and a stop ends the hold
+        early. The key is released on the way out however this exits, so an
+        interrupted hold never leaves a key stuck down.
+        """
+        if self.key_down_fn is None or self.key_up_fn is None:
+            self.press_fn(key_name, seconds)
+            return
+        self.key_down_fn(key_name)
+        try:
+            self.sleep_fn(seconds)
+        finally:
+            self.key_up_fn(key_name)
 
     def _step_duration(self, step):
         """A repeat takes its count times what is inside it -- worked out,
@@ -363,7 +398,7 @@ class ScriptRunner:
                 if problem is None:
                     try:
                         if step[0] == "press":
-                            self.press_fn(step[1], step[2])
+                            self._hold(step[1], step[2])
                         else:
                             self.sleep_fn(step[1])
                     except Exception as e:

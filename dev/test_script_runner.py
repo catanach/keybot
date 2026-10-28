@@ -216,3 +216,105 @@ class YieldsBetweenSteps(unittest.TestCase):
         runner.run_one_pass()
         self.assertEqual(self.pressed, ["A", "B"])
         self.assertIsNone(runner.last_error)
+
+
+class HoldKeepsTheBoardAnsweringTest(unittest.TestCase):
+    """Issue #21. A held key used to block inside press_fn for the whole
+    hold, so nothing was served while it was down: /status and /stop both
+    went unanswered, the webapp recorded lost contact for a run that was
+    still typing, and Stop could not cut a hold short because the press
+    never looked at stop_requested.
+
+    A "wait" step never had this problem, because it goes through sleep_fn,
+    which polls. These tests pin a press to that same path.
+    """
+
+    def build(self, script, slice_seconds=0.01):
+        self.ticks = []
+        self.down = []
+        self.up = []
+        self.press_calls = []
+        self.clock = [0.0]
+
+        def tick_fn():
+            self.ticks.append(self.clock[0])
+
+        # The shape of make_sleep_fn in src/code.py: serve, check for a
+        # stop, wait a slice, repeat. The clock is fake so the test is
+        # instant and does not depend on how busy the machine is.
+        def sleep_fn(seconds):
+            end = self.clock[0] + seconds
+            while self.clock[0] < end:
+                # runner.tick_fn, not the local one: on the board both of
+                # these are server.poll, and going through the attribute
+                # lets a test swap in a tick that reacts to what it sees.
+                runner.tick_fn()
+                if runner.stop_requested:
+                    return
+                self.clock[0] += slice_seconds
+
+        runner = ScriptRunner(
+            script,
+            lambda name, hold: self.press_calls.append((name, hold)),
+            sleep_fn,
+            None,
+            tick_fn,
+            key_down_fn=self.down.append,
+            key_up_fn=self.up.append,
+        )
+        return runner
+
+    def longest_gap(self):
+        if len(self.ticks) < 2:
+            return float("inf")
+        return max(b - a for a, b in zip(self.ticks, self.ticks[1:]))
+
+    def test_a_five_second_hold_keeps_being_served(self):
+        runner = self.build([["press", "S", 5]])
+        runner.start(1)
+        runner.run_one_pass()
+        # The webapp gives up on the board after 5 seconds (TIMEOUT in
+        # webapp/app/device.py), so a gap anywhere near that is the bug.
+        self.assertLess(self.longest_gap(), 0.5)
+        self.assertGreater(len(self.ticks), 100)
+
+    def test_the_key_goes_down_once_and_up_once(self):
+        runner = self.build([["press", "S", 5]])
+        runner.start(1)
+        runner.run_one_pass()
+        self.assertEqual(self.down, ["S"])
+        self.assertEqual(self.up, ["S"])
+
+    def test_the_blocking_press_is_not_used_for_a_hold(self):
+        runner = self.build([["press", "S", 2]])
+        runner.start(1)
+        runner.run_one_pass()
+        self.assertEqual(self.press_calls, [])
+
+    def test_stop_ends_a_hold_early_and_lets_go_of_the_key(self):
+        runner = self.build([["press", "S", 60]])
+
+        def tick_and_stop_soon():
+            self.ticks.append(self.clock[0])
+            if len(self.ticks) == 5:
+                runner.stop_requested = True
+
+        runner.tick_fn = tick_and_stop_soon
+        runner.start(1)
+        runner.run_one_pass()
+        self.assertLess(self.clock[0], 60)
+        self.assertEqual(self.up, ["S"], "an interrupted hold must still release the key")
+
+    def test_a_runner_without_the_new_hooks_behaves_exactly_as_before(self):
+        ticks = []
+        presses = []
+        runner = ScriptRunner(
+            [["press", "S", 2]],
+            lambda name, hold: presses.append((name, hold)),
+            lambda seconds: None,
+            None,
+            ticks.append,
+        )
+        runner.start(1)
+        runner.run_one_pass()
+        self.assertEqual(presses, [("S", 2)])

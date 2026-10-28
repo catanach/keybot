@@ -13,7 +13,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { FakeEvent, document, elementsById } = require("./fake_dom.js");
+const { FakeEvent, document, elementsById, makeWindow, makeClock } = require("./fake_dom.js");
 
 const REPO = path.resolve(__dirname, "..");
 const APP_JS = path.join(REPO, "webapp/app/static/app.js");
@@ -90,9 +90,11 @@ function fakeFetch(url, opts = {}) {
 
 process.on("unhandledRejection", () => {});
 
+const testWindow = makeWindow();
+const clock = makeClock();
 const context = vm.createContext({
   document,
-  window: { location: { href: "/" } },
+  window: testWindow,
   navigator: { platform: "MacIntel" },
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   fetch: fakeFetch,
@@ -104,6 +106,7 @@ const context = vm.createContext({
   setTimeout: (fn) => { fn(); return 0; },
   clearTimeout: () => {},
   Event: FakeEvent,
+  Date: clock.Date,
 });
 vm.runInContext(fs.readFileSync(APP_JS, "utf-8"), context, { filename: "app.js" });
 
@@ -137,12 +140,49 @@ async function settle(rounds = 20) {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setImmediate(r));
 }
 
+function keyEvent(kind, code, extra = {}) {
+  return new FakeEvent(kind, {
+    bubbles: true,
+    code,
+    key: code.replace("Key", "").toLowerCase(),
+    ...extra,
+  });
+}
+
+// A real key goes down and comes back up. type() sent only keydown, which
+// was invisible while the page ignored keyup and would have left every
+// test's key held down forever once it stopped ignoring it.
+function down(code, extra = {}) {
+  document.dispatchEvent(keyEvent("keydown", code, extra));
+}
+
+function up(code) {
+  document.dispatchEvent(keyEvent("keyup", code));
+}
+
 function type(...codes) {
   for (const code of codes) {
-    document.dispatchEvent(
-      new FakeEvent("keydown", { bubbles: true, code, key: code.replace("Key", "").toLowerCase() })
-    );
+    down(code);
+    up(code);
   }
+}
+
+// Holds a key for a given number of milliseconds on the fake clock, firing
+// the auto-repeat keydowns the OS would fire while it is held down. repeats
+// defaults to what macOS does at roughly 10 per second.
+function hold(code, ms, { repeats = Math.max(0, Math.floor(ms / 100) - 1) } = {}) {
+  down(code);
+  for (let i = 0; i < repeats; i++) {
+    clock.advance(100);
+    down(code, { repeat: true });
+  }
+  clock.set(clock.now() + (ms - repeats * 100));
+  up(code);
+}
+
+// Moves the clock without touching a key, for the gaps between keystrokes.
+function pause(ms) {
+  clock.advance(ms);
 }
 
 function answerNext() {

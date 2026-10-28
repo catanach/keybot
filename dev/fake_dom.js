@@ -260,4 +260,68 @@ const document = {
   dispatchEvent: FakeElement.prototype.dispatchEvent,
 };
 
-module.exports = { FakeElement, FakeEvent, ClassList, document, parseFragment, elementsById, missingIds };
+
+// The page registers blur and visibilitychange listeners while a recording is
+// running, so a window stub without addEventListener throws at the moment a
+// recording starts. Every harness used a bare object literal here and would
+// have died on the first hold. `fire` is how a test plays the browser.
+function makeWindow() {
+  const listeners = new Map();
+  return {
+    location: { href: "/" },
+    addEventListener(type, fn) {
+      if (!listeners.has(type)) listeners.set(type, []);
+      listeners.get(type).push(fn);
+    },
+    removeEventListener(type, fn) {
+      const found = listeners.get(type);
+      if (!found) return;
+      const at = found.indexOf(fn);
+      if (at >= 0) found.splice(at, 1);
+    },
+    dispatchEvent(event) {
+      for (const fn of (listeners.get(event.type) || []).slice()) fn(event);
+      return true;
+    },
+    fire(type, props = {}) {
+      return this.dispatchEvent(new FakeEvent(type, props));
+    },
+    listenerCount(type) {
+      return (listeners.get(type) || []).length;
+    },
+  };
+}
+
+// A hold's duration is measured with Date.now(), so a test that types and
+// releases on real wall-clock time asserts on however long node happened to
+// take. This hands the page a clock the test moves by hand. Nothing in
+// app.js knows about it, which is the point: no test-only hook in the page.
+function makeClock(startMs = 1700000000000) {
+  let current = startMs;
+  class FakeDate extends Date {
+    constructor(...args) {
+      if (args.length === 0) super(current);
+      else super(...args);
+    }
+    static now() {
+      return current;
+    }
+  }
+  return {
+    Date: FakeDate,
+    advance(ms) {
+      current += ms;
+      return current;
+    },
+    set(ms) {
+      current = ms;
+      return current;
+    },
+    now() {
+      return current;
+    },
+  };
+}
+
+module.exports = { FakeElement, FakeEvent, ClassList, document, parseFragment,
+                   elementsById, missingIds, makeWindow, makeClock };

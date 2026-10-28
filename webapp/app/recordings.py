@@ -72,6 +72,44 @@ def nodes_after_adding(target: dict, recorded_steps: list, add_run_step: bool) -
     return total + len(recorded_steps)
 
 
+# The longest hold a recording may keep. A press blocks the step after it
+# for its whole duration, so an absurd number from a stuck key or a tab
+# left in the background becomes a script that looks fine and does nothing
+# for a quarter of an hour. Clamped rather than refused: a take Rosy just
+# recorded is never thrown away over one bad number.
+MAX_RECORDED_HOLD = 30.0
+MIN_RECORDED_HOLD = 0.1
+
+
+def clamp_holds(steps: list) -> list:
+    """Brings every press duration back into the range a board can type.
+
+    A NaN or a missing number becomes the floor rather than travelling on:
+    json.dumps writes NaN as a bare literal that the board's json cannot
+    parse, and the step would have failed on the Pico instead of here.
+    """
+    fixed = []
+    for step in steps:
+        if (
+            isinstance(step, (list, tuple))
+            and len(step) > 2
+            and step[0] == "press"
+        ):
+            hold = step[2]
+            if not isinstance(hold, (int, float)) or isinstance(hold, bool):
+                hold = MIN_RECORDED_HOLD
+            elif hold != hold:  # NaN
+                hold = MIN_RECORDED_HOLD
+            else:
+                hold = min(MAX_RECORDED_HOLD, max(MIN_RECORDED_HOLD, float(hold)))
+            fixed.append([step[0], step[1], hold])
+        elif isinstance(step, (list, tuple)):
+            fixed.append(list(step))
+        else:
+            fixed.append(step)
+    return fixed
+
+
 def save_recording(
     steps: list,
     name: str,
@@ -89,6 +127,7 @@ def save_recording(
     happened."""
     if not steps:
         raise SaveError("There are no recorded keys to save.")
+    steps = clamp_holds(steps)
     if target_id is None:
         return {
             "script": storage.save_script(None, name, description, steps),

@@ -215,6 +215,11 @@ function emptyRecordingState() {
     keystrokeCount: 0,
     capturedScript: [],
     elapsedTimer: null,
+    // The key being held down right now, or null. Its step is already in
+    // capturedScript at stepIndex with a provisional duration that the
+    // elapsed timer keeps up to date, so a reload mid-hold saves roughly
+    // the right number rather than 0.1.
+    activeHold: null,
     // Seconds from the first key to the last, kept because the panel says
     // how long the take was after the timer has stopped.
     elapsedSeconds: 0,
@@ -286,6 +291,10 @@ const LIVE_BACKLOG_LIMIT = 10;
 // The hold each live key gets, matching the 0.1 recorded for the step, so
 // what the PS5 feels now is what it will feel on replay.
 const LIVE_HOLD = 0.1;
+// The shortest hold a recorded press can have. A tap measures as a few
+// milliseconds, and the board rounds nothing, so without a floor a quick
+// press would arrive as a press of zero seconds.
+const HOLD_FLOOR = 0.1;
 
 const LIVE_UNREACHABLE_NOTE =
   "Not reaching the Pico -- still recording your keys, but they aren't being " +
@@ -521,21 +530,36 @@ function startRecording() {
   resetLiveSend();
   updateRecordingBanner();
 
-  // Start elapsed time counter
+  // Start elapsed time counter. The same tick grows the duration of a key
+  // that is currently held, which is what makes the preview move and keeps
+  // the saved draft honest without a second timer.
   recordingState.elapsedTimer = setInterval(() => {
     const elapsed = (Date.now() - recordingState.startTime) / 1000;
     recordingElapsed.textContent = formatElapsed(elapsed);
+    refreshActiveHold();
   }, 100);
 
-  // Listen for keypresses (this is a simplified version)
-  // In a real implementation, this would hook into the Pico communication
-  // For now, we'll simulate keystroke capture from typing in the page
   document.addEventListener("keydown", recordKeystroke);
+  document.addEventListener("keyup", recordKeyRelease);
+  // No key-up is delivered for a key that was down when the window lost
+  // focus or the tab went away, so a hold has to be closed on both. These
+  // are registered only while recording rather than at load.
+  window.addEventListener("blur", closeHoldOnFocusLoss);
+  window.addEventListener("visibilitychange", closeHoldOnFocusLoss);
+  document.addEventListener("visibilitychange", closeHoldOnFocusLoss);
 }
 
 function stopRecording() {
+  // Before anything else: a key still down has to get its real duration
+  // written, because the save panel's summary, the key count and the draft
+  // all read capturedScript below. Quietly, since Stop is not a surprise.
+  closeHold(Date.now(), { quiet: true });
   recordingState.isRecording = false;
   document.removeEventListener("keydown", recordKeystroke);
+  document.removeEventListener("keyup", recordKeyRelease);
+  window.removeEventListener("blur", closeHoldOnFocusLoss);
+  window.removeEventListener("visibilitychange", closeHoldOnFocusLoss);
+  document.removeEventListener("visibilitychange", closeHoldOnFocusLoss);
   clearInterval(recordingState.elapsedTimer);
   recordingState.elapsedTimer = null;
   // The script this recording could become part of, taken now: the editor
@@ -769,6 +793,70 @@ async function loadKeycodes() {
   return true;
 }
 
+// Rounds a measured hold to the 0.1s granularity the recorder already uses
+// for waits, and never below the floor.
+function holdSecondsFrom(startedAt, endedAt) {
+  const measured = (endedAt - startedAt) / 1000;
+  return Math.max(HOLD_FLOOR, Math.round(measured * 10) / 10);
+}
+
+// Writes the real duration onto the step for the key that is down, and
+// starts the clock for the gap before the next key. Everything that can
+// end a hold goes through here: key-up, a modifier chord, losing focus,
+// and Stop.
+function closeHold(endedAt, { quiet = false } = {}) {
+  const hold = recordingState.activeHold;
+  if (!hold) return null;
+  recordingState.activeHold = null;
+  const step = recordingState.capturedScript[hold.stepIndex];
+  const seconds = holdSecondsFrom(hold.downAt, endedAt);
+  if (step && step[0] === "press") step[2] = seconds;
+  // The gap to the next key is measured from when this one came up, not
+  // when it went down, or every wait after a hold counts the hold twice.
+  recordingState.lastKeyTime = endedAt;
+  recordingState.elapsedSeconds = (endedAt - recordingState.startTime) / 1000;
+  if (!quiet) updateRecordingPreview();
+  return { key: hold.keyCode, seconds };
+}
+
+// Keeps the in-flight step's duration roughly current while the key is
+// still down, so the preview grows and a reload never persists 0.1 for a
+// hold that was seconds long.
+function refreshActiveHold() {
+  const hold = recordingState.activeHold;
+  if (!hold) return;
+  const step = recordingState.capturedScript[hold.stepIndex];
+  if (step && step[0] === "press") {
+    step[2] = holdSecondsFrom(hold.downAt, Date.now());
+  }
+  updateRecordingPreview();
+}
+
+// Losing focus means the key-up is never delivered, so the hold has to be
+// closed where it stood rather than left open for the next key to inherit.
+function closeHoldOnFocusLoss() {
+  if (!recordingState.isRecording) return;
+  const closed = closeHold(Date.now());
+  if (!closed) return;
+  recordingError.textContent =
+    "Left this window while " + closed.key + " was down, so it was saved as a " +
+    closed.seconds + "s hold.";
+  saveRecordingDraft();
+}
+
+function recordKeyRelease(event) {
+  if (!recordingState.isRecording) return;
+  const hold = recordingState.activeHold;
+  if (!hold) return;
+  // Deliberately none of the modifier guards from recordKeystroke here: a
+  // key-up that arrives while Cmd happens to be down is still the end of
+  // the hold, and refusing it would leave the hold open.
+  const released = toKeycodeName(event);
+  if (released !== hold.keyCode) return;
+  closeHold(Date.now());
+  saveRecordingDraft();
+}
+
 function recordKeystroke(event) {
   if (!recordingState.isRecording) return;
 
@@ -776,7 +864,13 @@ function recordKeystroke(event) {
   // browser and OS shortcuts, not keystrokes anyone means to record.
   // The old check only skipped the modifier key itself, so reaching for
   // Cmd+R or Cmd+L dropped a stray letter into the script.
-  if (event.metaKey || event.ctrlKey || event.altKey) return;
+  // A chord also ends any hold in progress: macOS swallows the key-up of a
+  // key that was down when Cmd went down, so waiting for it would leave
+  // the hold open and the next key would inherit it.
+  if (event.metaKey || event.ctrlKey || event.altKey) {
+    closeHold(Date.now());
+    return;
+  }
 
   // A modifier pressed on its own is never a recordable keystroke.
   if (["Meta", "Control", "Alt", "Shift", "CapsLock"].includes(event.key)) return;
@@ -794,9 +888,19 @@ function recordKeystroke(event) {
   }
   event.preventDefault();
 
+  // The OS fires a keydown over and over while a key is held. Each one used
+  // to append another press step, which is how holding S for a second
+  // produced ten identical 0.1s presses and sent ten taps to the Pico.
+  // The hold is measured from the first keydown to the key-up instead.
+  if (event.repeat) return;
+
   const now = Date.now();
+
+  // One key at a time. Overlapping holds are not representable in a flat
+  // list of presses, so a new key ends whatever was still down.
+  if (recordingState.activeHold) closeHold(now, { quiet: true });
+
   const timeSinceLastKey = (now - recordingState.lastKeyTime) / 1000;
-  recordingState.lastKeyTime = now;
 
   // Round to 100ms granularity
   const roundedTime = Math.round(timeSinceLastKey * 10) / 10;
@@ -806,7 +910,15 @@ function recordKeystroke(event) {
     recordingState.capturedScript.push(["wait", Math.max(0.1, roundedTime)]);
   }
 
-  recordingState.capturedScript.push(["press", keyCode, LIVE_HOLD]);
+  // Pushed now with the floor as a placeholder. The real duration is only
+  // known at key-up, and closeHold writes it onto this same step rather
+  // than appending a second one.
+  recordingState.capturedScript.push(["press", keyCode, HOLD_FLOOR]);
+  recordingState.activeHold = {
+    keyCode,
+    downAt: now,
+    stepIndex: recordingState.capturedScript.length - 1,
+  };
   recordingState.keystrokeCount++;
   recordingState.elapsedSeconds = (now - recordingState.startTime) / 1000;
   // The script has the key either way. Sending it is a separate thing that
@@ -991,6 +1103,10 @@ function resetRecording() {
     clearInterval(recordingState.elapsedTimer);
   }
   document.removeEventListener("keydown", recordKeystroke);
+  document.removeEventListener("keyup", recordKeyRelease);
+  window.removeEventListener("blur", closeHoldOnFocusLoss);
+  window.removeEventListener("visibilitychange", closeHoldOnFocusLoss);
+  document.removeEventListener("visibilitychange", closeHoldOnFocusLoss);
   recordingState = emptyRecordingState();
   forgetRecordingDraft();
   savePanelToken++;

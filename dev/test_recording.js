@@ -360,6 +360,108 @@ async function main() {
     assert.strictEqual(banner.style.display, "none");
   });
 
+  // ----- issue #21: a held key is one hold, not a burst of taps -----
+
+  await test("holding a key records one press with how long it was held", async () => {
+    await freshRecording({ live: false });
+    hold("KeyS", 1000);
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [["press", "S", 1.0]]);
+  });
+
+  await test("the auto-repeat keydowns the OS fires add no extra steps", async () => {
+    await freshRecording({ live: false });
+    // Ten repeats is what produced ten ["press","S",0.1] steps in the bug
+    // report. The hold is 1s, so one step of 1.0 is the whole recording.
+    hold("KeyS", 1000, { repeats: 10 });
+    // Read the counter while the take is still open: saving clears it.
+    assert.strictEqual(keysCount.textContent, "1", "one keystroke, not eleven");
+    const steps = await saveAndReadSteps();
+    assert.strictEqual(steps.length, 1, "and one step, not eleven");
+  });
+
+  await test("a quick tap still records as a 0.1 press", async () => {
+    await freshRecording({ live: false });
+    type("KeyA");
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [["press", "A", 0.1]]);
+  });
+
+  await test("the gap after a hold is measured from when the key came up", async () => {
+    await freshRecording({ live: false });
+    // Tap A, wait 1s, hold S for 2s, wait 1s, tap D. The wait after S has
+    // to be 1s: measuring from the keydown instead would make it 3s.
+    type("KeyA");
+    pause(1000);
+    hold("KeyS", 2000);
+    pause(1000);
+    type("KeyD");
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [
+      ["press", "A", 0.1],
+      ["wait", 1],
+      ["press", "S", 2.0],
+      ["wait", 1],
+      ["press", "D", 0.1],
+    ]);
+  });
+
+  await test("pressing another key while one is held ends the held one", async () => {
+    await freshRecording({ live: false });
+    down("KeyS");
+    pause(700);
+    type("KeyA");
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [
+      ["press", "S", 0.7],
+      ["press", "A", 0.1],
+    ]);
+  });
+
+  await test("leaving the window mid-hold saves the hold and says so", async () => {
+    await freshRecording({ live: false });
+    down("KeyS");
+    pause(1500);
+    testWindow.fire("blur");
+    assert.strictEqual(
+      elementsById.get("recording-error").textContent,
+      "Left this window while S was down, so it was saved as a 1.5s hold."
+    );
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [["press", "S", 1.5]]);
+  });
+
+  await test("stopping mid-hold still writes the real duration", async () => {
+    await freshRecording({ live: false });
+    down("KeyS");
+    pause(2400);
+    // No key-up at all: Stop is pressed while the key is still down.
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [["press", "S", 2.4]]);
+  });
+
+  await test("a hold sends one key to the PS5, not one per repeat", async () => {
+    await freshRecording({ live: true });
+    hold("KeyS", 1000, { repeats: 10 });
+    await settle();
+    assert.deepStrictEqual(
+      press.sent,
+      ["S"],
+      "the bug sent a tap per auto-repeat tick while the key was held"
+    );
+  });
+
+  await test("the preview grows while a key is still down", async () => {
+    await freshRecording({ live: false });
+    down("KeyS");
+    pause(800);
+    context.refreshActiveHold();
+    assert.ok(
+      preview.textContent.includes("0.8"),
+      "expected the in-flight hold in the preview, got: " + preview.textContent
+    );
+  });
+
   const failed = results.filter(([ok]) => !ok).length;
   console.log("");
   console.log(`${results.length - failed} of ${results.length} passed`);

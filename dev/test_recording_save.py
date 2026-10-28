@@ -313,3 +313,50 @@ class NodeBudgetTest(RecordingSaveTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ClampedHoldsTest(RecordingSaveTestCase):
+    """Issue #21. A recorded hold is now however long a key was held, so a
+    stuck key or a tab left in the background can produce a number that is
+    not typeable. Every one of these is clamped rather than refused: a take
+    that was just recorded is never thrown away over one bad duration."""
+
+    def saved_steps(self, steps):
+        result = self.recordings.save_recording(steps, "Recording 1")
+        return self.storage.get_script(result["script"]["id"])["steps"]
+
+    def test_an_ordinary_hold_is_left_alone(self):
+        self.assertEqual(
+            self.saved_steps([["press", "S", 2.4]]), [["press", "S", 2.4]]
+        )
+
+    def test_an_absurd_hold_is_brought_down_to_the_ceiling(self):
+        self.assertEqual(
+            self.saved_steps([["press", "S", 900]]),
+            [["press", "S", self.recordings.MAX_RECORDED_HOLD]],
+        )
+
+    def test_zero_and_negative_holds_come_up_to_the_floor(self):
+        floor = self.recordings.MIN_RECORDED_HOLD
+        self.assertEqual(self.saved_steps([["press", "S", 0]]), [["press", "S", floor]])
+        self.assertEqual(self.saved_steps([["press", "S", -5]]), [["press", "S", floor]])
+
+    def test_a_hold_that_is_not_a_number_becomes_the_floor(self):
+        floor = self.recordings.MIN_RECORDED_HOLD
+        # NaN survives json.dumps as a bare literal the board's json cannot
+        # parse, so it has to be caught here rather than on the Pico.
+        self.assertEqual(
+            self.saved_steps([["press", "S", float("nan")]]), [["press", "S", floor]]
+        )
+        self.assertEqual(
+            self.saved_steps([["press", "S", None]]), [["press", "S", floor]]
+        )
+
+    def test_waits_and_repeats_are_not_touched(self):
+        steps = [["wait", 2], ["press", "A", 0.1], ["repeat", 3, [["press", "B", 0.1]]]]
+        self.assertEqual(self.saved_steps(steps), steps)
+
+    def test_a_clamped_recording_is_still_saved(self):
+        result = self.recordings.save_recording([["press", "S", 900]], "Recording 1")
+        self.assertEqual(result["warning"], "")
+        self.assertEqual(self.names(), ["Recording 1"])

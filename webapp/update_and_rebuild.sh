@@ -41,6 +41,15 @@ LOG="webapp/update.log"
   # Run the Pico diagnostic if an agent has asked for one. No-op otherwise.
   bash webapp/pico-doctor.sh || echo "pico-doctor failed, continuing"
 
+  # Over-the-air firmware deploy, only when an agent has asked and Rosy
+  # has approved it. No trigger file means this does nothing.
+  bash webapp/fw-deploy.sh || echo "fw-deploy failed, continuing"
+  bash webapp/fw-verify.sh || echo "fw-verify failed, continuing"
+
+  # Restore the board over USB, only when an agent has explicitly asked and
+  # Rosy has approved it. No trigger file means this does nothing.
+  bash webapp/usb-deploy.sh || echo "usb-deploy failed, continuing"
+
   # Push the teaim working tree. Separate repo, same reason as gh-bridge:
   # the agent shells cannot reach github.com and this runs where it can.
   bash webapp/teaim-sync.sh || echo "teaim-sync failed, continuing"

@@ -1,36 +1,20 @@
 #!/bin/bash
-# One-shot Pico diagnostic, run by the LaunchAgent natively on the Mac
-# because the agent shells have no network interfaces at all.
 export PATH="/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/sbin:/usr/sbin:$PATH"
 unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY ALL_PROXY all_proxy
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
-TRIGGER="webapp/.doctor-requested"; LOG="webapp/pico-doctor.log"
-[ -f "$TRIGGER" ] || exit 0
-PICO_MAC="88:a2:9e:fb:18:6f"
+[ -f webapp/.doctor-requested ] || exit 0
 {
-  echo "=============================================="
-  echo "=== pico-doctor v3 (wifi focus) $(date) ==="
-
-  echo "--- is the Pico's MAC on the LAN at all? (quick recheck) ---"
-  ping -c 1 -W 400 192.168.10.22 >/dev/null 2>&1
-  arp -a 2>/dev/null | grep -i "$PICO_MAC" || echo "  not present"
-
-  echo "--- what Wi-Fi is this Mac on, and on which band? ---"
-  system_profiler SPAirPortDataType 2>/dev/null | awk '
-    /Current Network Information/,/Other Local Wi-Fi Networks/' | head -30
-
-  echo "--- is a 2.4 GHz network being broadcast? (Pico W is 2.4 GHz only) ---"
-  system_profiler SPAirPortDataType 2>/dev/null \
-    | grep -E '^ {12}[^ ].*:$|PHY Mode|Channel|Security' \
-    | head -80
-
-  echo "--- router model / identity ---"
-  curl -s -m 4 -o /dev/null -w "router.asus.com http %{http_code}\n" http://router.asus.com/ 2>&1
-
-  echo "--- how many devices are on the LAN right now ---"
-  arp -a 2>/dev/null | grep -v incomplete | grep -vc 'ff:ff:ff' | sed 's/^/  /'
-
-  echo "=== end pico-doctor v3 ==="
-} >> "$LOG" 2>&1
-rm -f "$TRIGGER"
-tail -n 600 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"
+  echo "### $(date '+%H:%M:%S')"
+  ping -c 1 -W 500 192.168.10.22 >/dev/null 2>&1
+  if arp -a 2>/dev/null | grep -qi 88:a2:9e:fb:18:6f; then
+    echo "MAC:    on the LAN"
+  else
+    for i in $(seq 1 254); do ping -c 1 -W 100 -t 1 192.168.10.$i >/dev/null 2>&1 & done; wait; sleep 1
+    arp -a 2>/dev/null | grep -i 88:a2:9e:fb:18:6f | sed 's/^/MAC:    /' || echo "MAC:    NOT on the LAN"
+  fi
+  curl -s -m 8 -o /tmp/ps.$$ -w "STATUS: http %{http_code}\n" http://192.168.10.22:5000/status 2>&1
+  head -c 400 /tmp/ps.$$ 2>/dev/null | sed 's/^/BODY:   /'; echo; rm -f /tmp/ps.$$
+  curl -s -m 20 http://localhost:8000/api/device/status 2>&1 | head -c 400 | sed 's/^/WEBAPP: /'; echo
+} >> webapp/pico-status.log 2>&1
+rm -f webapp/.doctor-requested
+tail -n 60 webapp/pico-status.log > webapp/pico-status.log.tmp && mv webapp/pico-status.log.tmp webapp/pico-status.log

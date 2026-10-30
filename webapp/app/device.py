@@ -78,6 +78,40 @@ async def press(key: str, hold: float) -> None:
         raise DeviceError(f"device refused the key: {resp.text}")
 
 
+async def key_down(key: str) -> None:
+    """Presses a key and leaves it down.
+
+    No _device_lock, for the same reason as press(): a keystroke that queues
+    behind a /status poll is a keystroke that arrives late, and late is the
+    whole problem here. Returns as soon as the board has the key down, so
+    the hold lasts exactly as long as the finger does rather than as long as
+    a request.
+    """
+    url = f"{settings.get_device_url()}/key_down"
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as client:
+            resp = await client.get(url, params={"key": key})
+    except httpx.RequestError as e:
+        raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
+    if resp.status_code == 409:
+        raise DeviceBusy(resp.text)
+    if resp.status_code != 200:
+        raise DeviceError(f"device refused the key: {resp.text}")
+
+
+async def key_up(key: str) -> None:
+    """Lets go of a key. The board answers ok even for a key it was not
+    holding, so a duplicate release is never an error worth showing."""
+    url = f"{settings.get_device_url()}/key_up"
+    try:
+        async with httpx.AsyncClient(timeout=2.5) as client:
+            resp = await client.get(url, params={"key": key})
+    except httpx.RequestError as e:
+        raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
+    if resp.status_code != 200:
+        raise DeviceError(f"device would not release the key: {resp.text}")
+
+
 async def press_supported() -> bool:
     """Whether the firmware on the board has /press at all.
 
@@ -86,7 +120,11 @@ async def press_supported() -> bool:
     does not have it answers 404. That needs no extra endpoint on the file
     with the least room to spare, and presses no real key to find out.
     """
-    url = f"{settings.get_device_url()}/press"
+    # /key_down, not /press: live send holds keys through key_down and
+    # key_up now, and a board on older firmware has /press but neither
+    # of those, so probing /press would turn the switch on for a board
+    # that cannot do it.
+    url = f"{settings.get_device_url()}/key_down"
     try:
         async with _device_lock, httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.get(url)

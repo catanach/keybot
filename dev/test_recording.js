@@ -20,8 +20,11 @@ const APP_JS = path.join(REPO, "webapp/app/static/app.js");
 
 // What the device stub does with a /api/device/press request.
 const press = {
-  // Every request that has been made, in the order it was made.
+  // Every key pressed, in order. Releases are not counted here so the
+  // older assertions still read as "which keys reached the PS5".
   sent: [],
+  // down: and up: in order, for the tests that care which was which.
+  events: [],
   // Requests still waiting for an answer, when holdAnswers is on.
   waiting: [],
   holdAnswers: false,
@@ -65,12 +68,18 @@ function fakeFetch(url, opts = {}) {
   if (url === "/api/recordings/next-name") {
     return Promise.resolve(jsonResponse({ name: "Recording 1" }));
   }
-  if (url === "/api/device/press") {
+  if (url === "/api/device/key-down" || url === "/api/device/press") {
     const key = JSON.parse(opts.body).key;
     press.sent.push(key);
+    press.events.push("down:" + key);
     if (press.holdAnswers) {
       return new Promise((resolve) => press.waiting.push({ key, resolve }));
     }
+    return Promise.resolve(jsonResponse({ ok: true }));
+  }
+  if (url === "/api/device/key-up") {
+    const key = JSON.parse(opts.body).key;
+    press.events.push("up:" + key);
     return Promise.resolve(jsonResponse({ ok: true }));
   }
   if (url === "/api/device/press/supported") {
@@ -201,6 +210,7 @@ async function freshRecording({ live = true } = {}) {
   context.stopRecording();
   context.resetRecording();
   press.sent = [];
+  press.events = [];
   liveToggle.checked = live;
   context.startRecording();
   await settle();
@@ -459,6 +469,82 @@ async function main() {
     assert.ok(
       preview.textContent.includes("0.8"),
       "expected the in-flight hold in the preview, got: " + preview.textContent
+    );
+  });
+
+  // ----- the hold has to reach the PS5 as a hold, not a tap -----
+
+  await test("a held key is sent as a key down and a key up, not a tap", async () => {
+    await freshRecording({ live: true });
+    hold("KeyS", 2000, { repeats: 19 });
+    await settle();
+    assert.deepStrictEqual(
+      press.events,
+      ["down:S", "up:S"],
+      "one down and one up is what makes the console see a hold"
+    );
+  });
+
+  await test("the key stays down on the board for as long as the finger does", async () => {
+    await freshRecording({ live: true });
+    down("KeyS");
+    await settle();
+    // Still held: the board has been told to press and nothing has released.
+    assert.deepStrictEqual(press.events, ["down:S"]);
+    pause(3000);
+    up("KeyS");
+    await settle();
+    assert.deepStrictEqual(press.events, ["down:S", "up:S"]);
+  });
+
+  await test("losing focus mid-hold releases the key on the board too", async () => {
+    await freshRecording({ live: true });
+    down("KeyS");
+    await settle();
+    pause(1200);
+    testWindow.fire("blur");
+    await settle();
+    assert.deepStrictEqual(
+      press.events,
+      ["down:S", "up:S"],
+      "a key left down on the console is the worst outcome here"
+    );
+  });
+
+  await test("stopping mid-hold releases the key on the board too", async () => {
+    await freshRecording({ live: true });
+    down("KeyS");
+    await settle();
+    pause(900);
+    context.stopRecording();
+    await settle();
+    assert.deepStrictEqual(press.events, ["down:S", "up:S"]);
+  });
+
+  await test("with the switch off nothing is pressed or released", async () => {
+    await freshRecording({ live: false });
+    hold("KeyS", 1500);
+    await settle();
+    assert.deepStrictEqual(press.events, []);
+  });
+
+  await test("a release still goes out after the backlog has given up", async () => {
+    await freshRecording({ live: true });
+    press.holdAnswers = true;
+    down("KeyS");
+    await settle();
+    // Flood the queue past the limit so live send gives up, the way typing
+    // far ahead of the board does.
+    for (let i = 0; i < 40; i++) {
+      type("KeyA");
+      await settle(2);
+    }
+    press.holdAnswers = false;
+    while (press.waiting.length > 0) press.waiting.shift().resolve(jsonResponse({ ok: true }));
+    await settle();
+    assert.ok(
+      press.events.includes("up:S"),
+      "giving up on typing must not leave S held down on the console"
     );
   });
 

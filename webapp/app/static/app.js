@@ -60,6 +60,12 @@ const api = {
   async devicePress(key, hold) {
     return fetchJson("/api/device/press", "POST", { key, hold });
   },
+  async deviceKeyDown(key) {
+    return fetchJson("/api/device/key-down", "POST", { key });
+  },
+  async deviceKeyUp(key) {
+    return fetchJson("/api/device/key-up", "POST", { key });
+  },
   async devicePressSupported() {
     return fetchJson("/api/device/press/supported", "GET");
   },
@@ -349,15 +355,33 @@ function updateRecordingBanner() {
       "the PS5. Typing anywhere on this page is captured.";
 }
 
-function queueLiveKey(key) {
+// Live send mirrors the keyboard rather than approximating it: a key going
+// down is sent as a key going down, and the release is its own message. A
+// single /press could not hold anything, because it blocks the board for
+// the length of the hold, which is why the firmware caps it at a second.
+// That is why holding a key looked like a quick tap on the console.
+function queueLiveKey(key, kind = "down") {
   if (liveSend.gaveUp) return;
   if (liveSend.queue.length >= LIVE_BACKLOG_LIMIT) {
     liveSend.gaveUp = true;
-    liveSend.queue = [];
+    // Throw away the keys that were waiting to be typed, but never a
+    // release: dropping one leaves that key held down on the console until
+    // the board's timeout notices, which is a far worse outcome than a few
+    // lost keystrokes.
+    liveSend.queue = liveSend.queue.filter((item) => item.kind === "up");
     setLiveProblem(LIVE_BACKLOG_NOTE);
+    sendQueuedKeys();
     return;
   }
-  liveSend.queue.push(key);
+  liveSend.queue.push({ key, kind });
+  sendQueuedKeys();
+}
+
+// A release has to go out even when the backlog gave up or the queue is
+// full, or the key stays down on the console until the board's own timeout
+// lets go of it. It jumps the queue for the same reason.
+function queueLiveRelease(key) {
+  liveSend.queue.unshift({ key, kind: "up" });
   sendQueuedKeys();
 }
 
@@ -367,13 +391,19 @@ async function sendQueuedKeys() {
   if (liveSend.sending) return;
   liveSend.sending = true;
   try {
-    while (liveSend.queue.length > 0 && !liveSend.gaveUp) {
-      const key = liveSend.queue.shift();
+    while (
+      liveSend.queue.length > 0 &&
+      (!liveSend.gaveUp || liveSend.queue[0].kind === "up")
+    ) {
+      const { key, kind } = liveSend.queue.shift();
       try {
-        await api.devicePress(key, LIVE_HOLD);
-        // Whatever was wrong is over. A key that failed on the way stays in
-        // the script exactly as it was typed.
-        setLiveProblem("");
+        if (kind === "up") await api.deviceKeyUp(key);
+        else await api.deviceKeyDown(key);
+        // Only a key that went down proves typing is getting through. A
+        // release that succeeds says nothing about that, and clearing the
+        // warning on one would wipe a real "not reaching the Pico" the
+        // moment the finger came off the key.
+        if (kind !== "up") setLiveProblem("");
       } catch (e) {
         // 409 is the board saying it is busy, in its own words. Anything
         // else, at this point, means it isn't answering.
@@ -815,6 +845,10 @@ function closeHold(endedAt, { quiet = false } = {}) {
   // when it went down, or every wait after a hold counts the hold twice.
   recordingState.lastKeyTime = endedAt;
   recordingState.elapsedSeconds = (endedAt - recordingState.startTime) / 1000;
+  // Let go on the console too, whatever ended the hold: key-up, a modifier
+  // chord, losing focus, or Stop. Without this the key stays down until the
+  // board's own timeout notices.
+  if (hold.sentLive) queueLiveRelease(hold.keyCode);
   if (!quiet) updateRecordingPreview();
   return { key: hold.keyCode, seconds };
 }
@@ -914,10 +948,14 @@ function recordKeystroke(event) {
   // known at key-up, and closeHold writes it onto this same step rather
   // than appending a second one.
   recordingState.capturedScript.push(["press", keyCode, HOLD_FLOOR]);
+  const sendingLive = liveSendWanted();
   recordingState.activeHold = {
     keyCode,
     downAt: now,
     stepIndex: recordingState.capturedScript.length - 1,
+    // Only release what was pressed. With the switch off nothing went to
+    // the board, so nothing should be released on it either.
+    sentLive: sendingLive,
   };
   recordingState.keystrokeCount++;
   recordingState.elapsedSeconds = (now - recordingState.startTime) / 1000;

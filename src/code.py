@@ -108,7 +108,9 @@ live_keys = []
 # If the matching /key_up never arrives, because Wi-Fi dropped or the page
 # was closed mid-hold, the key would stay down on the console forever. The
 # main loop lets go of everything this long after the last /key_down.
-LIVE_KEY_TIMEOUT = 10.0
+# Long enough that a deliberate hold is never cut short, short enough that
+# a key left down is noticed in the same sitting.
+LIVE_KEY_TIMEOUT = 30.0
 live_keys_deadline = None
 
 

@@ -47,6 +47,7 @@ LOG="webapp/update.log"
   bash webapp/fw-verify.sh || echo "fw-verify failed, continuing"
   bash webapp/hold-test.sh || echo "hold-test failed, continuing"
   bash webapp/restore-board.sh || echo "restore-board failed, continuing"
+  bash webapp/livehold-test.sh || echo "livehold-test failed, continuing"
 
   # Restore the board over USB, only when an agent has explicitly asked and
   # Rosy has approved it. No trigger file means this does nothing.

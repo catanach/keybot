@@ -159,11 +159,9 @@ function boot(store) {
   const confirms = [];
   let confirmAnswer = true;
   const alerts = [];
-  const testWindow = dom.makeWindow();
-  const clock = dom.makeClock();
   const context = vm.createContext({
     document: dom.document,
-    window: testWindow,
+    window: { location: { href: "/" } },
     navigator: { platform: "MacIntel" },
     localStorage: {
       getItem: (key) => (store.has(key) ? store.get(key) : null),
@@ -185,15 +183,12 @@ function boot(store) {
     },
     clearTimeout: () => {},
     Event: dom.FakeEvent,
-    Date: clock.Date,
   });
   vm.runInContext(fs.readFileSync(APP_JS, "utf-8"), context, { filename: "app.js" });
 
   const page = {
     context,
     dom,
-    window: testWindow,
-    clock,
     confirms,
     alerts,
     answerConfirm(answer) {
@@ -205,45 +200,16 @@ function boot(store) {
     text(id) {
       return page.el(id).textContent;
     },
-    down(code, extra = {}) {
-      dom.document.dispatchEvent(
-        new dom.FakeEvent("keydown", {
-          bubbles: true,
-          code,
-          key: code.replace("Key", "").toLowerCase(),
-          ...extra,
-        })
-      );
-    },
-    up(code) {
-      dom.document.dispatchEvent(
-        new dom.FakeEvent("keyup", {
-          bubbles: true,
-          code,
-          key: code.replace("Key", "").toLowerCase(),
-        })
-      );
-    },
-    // A real key goes down and comes back up. This sent only keydown, which
-    // would leave every test's key held down once the page stopped ignoring
-    // keyup.
     type(...codes) {
       for (const code of codes) {
-        page.down(code);
-        page.up(code);
+        dom.document.dispatchEvent(
+          new dom.FakeEvent("keydown", {
+            bubbles: true,
+            code,
+            key: code.replace("Key", "").toLowerCase(),
+          })
+        );
       }
-    },
-    hold(code, ms, { repeats = Math.max(0, Math.floor(ms / 100) - 1) } = {}) {
-      page.down(code);
-      for (let i = 0; i < repeats; i++) {
-        clock.advance(100);
-        page.down(code, { repeat: true });
-      }
-      clock.set(clock.now() + (ms - repeats * 100));
-      page.up(code);
-    },
-    pause(ms) {
-      clock.advance(ms);
     },
   };
   return page;

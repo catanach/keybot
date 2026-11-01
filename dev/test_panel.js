@@ -13,7 +13,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { FakeEvent, document, elementsById , makeWindow } = require("./fake_dom.js");
+const { FakeEvent, document, elementsById } = require("./fake_dom.js");
 
 const REPO = path.resolve(__dirname, "..");
 const APP_JS = path.join(REPO, "webapp/app/static/app.js");
@@ -50,10 +50,9 @@ function fakeFetch(url) {
   return Promise.resolve(jsonResponse({}));
 }
 
-const testWindow = makeWindow();
 const context = vm.createContext({
   document,
-  window: testWindow,
+  window: { location: { href: "/" } },
   navigator: { platform: "MacIntel" },
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   fetch: fakeFetch,

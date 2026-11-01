@@ -13,18 +13,15 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { FakeEvent, document, elementsById, makeWindow, makeClock } = require("./fake_dom.js");
+const { FakeEvent, document, elementsById } = require("./fake_dom.js");
 
 const REPO = path.resolve(__dirname, "..");
 const APP_JS = path.join(REPO, "webapp/app/static/app.js");
 
 // What the device stub does with a /api/device/press request.
 const press = {
-  // Every key pressed, in order. Releases are not counted here so the
-  // older assertions still read as "which keys reached the PS5".
+  // Every request that has been made, in the order it was made.
   sent: [],
-  // down: and up: in order, for the tests that care which was which.
-  events: [],
   // Requests still waiting for an answer, when holdAnswers is on.
   waiting: [],
   holdAnswers: false,
@@ -68,18 +65,12 @@ function fakeFetch(url, opts = {}) {
   if (url === "/api/recordings/next-name") {
     return Promise.resolve(jsonResponse({ name: "Recording 1" }));
   }
-  if (url === "/api/device/key-down" || url === "/api/device/press") {
+  if (url === "/api/device/press") {
     const key = JSON.parse(opts.body).key;
     press.sent.push(key);
-    press.events.push("down:" + key);
     if (press.holdAnswers) {
       return new Promise((resolve) => press.waiting.push({ key, resolve }));
     }
-    return Promise.resolve(jsonResponse({ ok: true }));
-  }
-  if (url === "/api/device/key-up") {
-    const key = JSON.parse(opts.body).key;
-    press.events.push("up:" + key);
     return Promise.resolve(jsonResponse({ ok: true }));
   }
   if (url === "/api/device/press/supported") {
@@ -99,11 +90,9 @@ function fakeFetch(url, opts = {}) {
 
 process.on("unhandledRejection", () => {});
 
-const testWindow = makeWindow();
-const clock = makeClock();
 const context = vm.createContext({
   document,
-  window: testWindow,
+  window: { location: { href: "/" } },
   navigator: { platform: "MacIntel" },
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   fetch: fakeFetch,
@@ -115,7 +104,6 @@ const context = vm.createContext({
   setTimeout: (fn) => { fn(); return 0; },
   clearTimeout: () => {},
   Event: FakeEvent,
-  Date: clock.Date,
 });
 vm.runInContext(fs.readFileSync(APP_JS, "utf-8"), context, { filename: "app.js" });
 
@@ -149,49 +137,12 @@ async function settle(rounds = 20) {
   for (let i = 0; i < rounds; i++) await new Promise((r) => setImmediate(r));
 }
 
-function keyEvent(kind, code, extra = {}) {
-  return new FakeEvent(kind, {
-    bubbles: true,
-    code,
-    key: code.replace("Key", "").toLowerCase(),
-    ...extra,
-  });
-}
-
-// A real key goes down and comes back up. type() sent only keydown, which
-// was invisible while the page ignored keyup and would have left every
-// test's key held down forever once it stopped ignoring it.
-function down(code, extra = {}) {
-  document.dispatchEvent(keyEvent("keydown", code, extra));
-}
-
-function up(code) {
-  document.dispatchEvent(keyEvent("keyup", code));
-}
-
 function type(...codes) {
   for (const code of codes) {
-    down(code);
-    up(code);
+    document.dispatchEvent(
+      new FakeEvent("keydown", { bubbles: true, code, key: code.replace("Key", "").toLowerCase() })
+    );
   }
-}
-
-// Holds a key for a given number of milliseconds on the fake clock, firing
-// the auto-repeat keydowns the OS would fire while it is held down. repeats
-// defaults to what macOS does at roughly 10 per second.
-function hold(code, ms, { repeats = Math.max(0, Math.floor(ms / 100) - 1) } = {}) {
-  down(code);
-  for (let i = 0; i < repeats; i++) {
-    clock.advance(100);
-    down(code, { repeat: true });
-  }
-  clock.set(clock.now() + (ms - repeats * 100));
-  up(code);
-}
-
-// Moves the clock without touching a key, for the gaps between keystrokes.
-function pause(ms) {
-  clock.advance(ms);
 }
 
 function answerNext() {
@@ -210,7 +161,6 @@ async function freshRecording({ live = true } = {}) {
   context.stopRecording();
   context.resetRecording();
   press.sent = [];
-  press.events = [];
   liveToggle.checked = live;
   context.startRecording();
   await settle();
@@ -368,184 +318,6 @@ async function main() {
 
     context.stopRecording();
     assert.strictEqual(banner.style.display, "none");
-  });
-
-  // ----- issue #21: a held key is one hold, not a burst of taps -----
-
-  await test("holding a key records one press with how long it was held", async () => {
-    await freshRecording({ live: false });
-    hold("KeyS", 1000);
-    const steps = await saveAndReadSteps();
-    assert.deepStrictEqual(steps, [["press", "S", 1.0]]);
-  });
-
-  await test("the auto-repeat keydowns the OS fires add no extra steps", async () => {
-    await freshRecording({ live: false });
-    // Ten repeats is what produced ten ["press","S",0.1] steps in the bug
-    // report. The hold is 1s, so one step of 1.0 is the whole recording.
-    hold("KeyS", 1000, { repeats: 10 });
-    // Read the counter while the take is still open: saving clears it.
-    assert.strictEqual(keysCount.textContent, "1", "one keystroke, not eleven");
-    const steps = await saveAndReadSteps();
-    assert.strictEqual(steps.length, 1, "and one step, not eleven");
-  });
-
-  await test("a quick tap still records as a 0.1 press", async () => {
-    await freshRecording({ live: false });
-    type("KeyA");
-    const steps = await saveAndReadSteps();
-    assert.deepStrictEqual(steps, [["press", "A", 0.1]]);
-  });
-
-  await test("the gap after a hold is measured from when the key came up", async () => {
-    await freshRecording({ live: false });
-    // Tap A, wait 1s, hold S for 2s, wait 1s, tap D. The wait after S has
-    // to be 1s: measuring from the keydown instead would make it 3s.
-    type("KeyA");
-    pause(1000);
-    hold("KeyS", 2000);
-    pause(1000);
-    type("KeyD");
-    const steps = await saveAndReadSteps();
-    assert.deepStrictEqual(steps, [
-      ["press", "A", 0.1],
-      ["wait", 1],
-      ["press", "S", 2.0],
-      ["wait", 1],
-      ["press", "D", 0.1],
-    ]);
-  });
-
-  await test("pressing another key while one is held ends the held one", async () => {
-    await freshRecording({ live: false });
-    down("KeyS");
-    pause(700);
-    type("KeyA");
-    const steps = await saveAndReadSteps();
-    assert.deepStrictEqual(steps, [
-      ["press", "S", 0.7],
-      ["press", "A", 0.1],
-    ]);
-  });
-
-  await test("leaving the window mid-hold saves the hold and says so", async () => {
-    await freshRecording({ live: false });
-    down("KeyS");
-    pause(1500);
-    testWindow.fire("blur");
-    assert.strictEqual(
-      elementsById.get("recording-error").textContent,
-      "Left this window while S was down, so it was saved as a 1.5s hold."
-    );
-    const steps = await saveAndReadSteps();
-    assert.deepStrictEqual(steps, [["press", "S", 1.5]]);
-  });
-
-  await test("stopping mid-hold still writes the real duration", async () => {
-    await freshRecording({ live: false });
-    down("KeyS");
-    pause(2400);
-    // No key-up at all: Stop is pressed while the key is still down.
-    const steps = await saveAndReadSteps();
-    assert.deepStrictEqual(steps, [["press", "S", 2.4]]);
-  });
-
-  await test("a hold sends one key to the PS5, not one per repeat", async () => {
-    await freshRecording({ live: true });
-    hold("KeyS", 1000, { repeats: 10 });
-    await settle();
-    assert.deepStrictEqual(
-      press.sent,
-      ["S"],
-      "the bug sent a tap per auto-repeat tick while the key was held"
-    );
-  });
-
-  await test("the preview grows while a key is still down", async () => {
-    await freshRecording({ live: false });
-    down("KeyS");
-    pause(800);
-    context.refreshActiveHold();
-    assert.ok(
-      preview.textContent.includes("0.8"),
-      "expected the in-flight hold in the preview, got: " + preview.textContent
-    );
-  });
-
-  // ----- the hold has to reach the PS5 as a hold, not a tap -----
-
-  await test("a held key is sent as a key down and a key up, not a tap", async () => {
-    await freshRecording({ live: true });
-    hold("KeyS", 2000, { repeats: 19 });
-    await settle();
-    assert.deepStrictEqual(
-      press.events,
-      ["down:S", "up:S"],
-      "one down and one up is what makes the console see a hold"
-    );
-  });
-
-  await test("the key stays down on the board for as long as the finger does", async () => {
-    await freshRecording({ live: true });
-    down("KeyS");
-    await settle();
-    // Still held: the board has been told to press and nothing has released.
-    assert.deepStrictEqual(press.events, ["down:S"]);
-    pause(3000);
-    up("KeyS");
-    await settle();
-    assert.deepStrictEqual(press.events, ["down:S", "up:S"]);
-  });
-
-  await test("losing focus mid-hold releases the key on the board too", async () => {
-    await freshRecording({ live: true });
-    down("KeyS");
-    await settle();
-    pause(1200);
-    testWindow.fire("blur");
-    await settle();
-    assert.deepStrictEqual(
-      press.events,
-      ["down:S", "up:S"],
-      "a key left down on the console is the worst outcome here"
-    );
-  });
-
-  await test("stopping mid-hold releases the key on the board too", async () => {
-    await freshRecording({ live: true });
-    down("KeyS");
-    await settle();
-    pause(900);
-    context.stopRecording();
-    await settle();
-    assert.deepStrictEqual(press.events, ["down:S", "up:S"]);
-  });
-
-  await test("with the switch off nothing is pressed or released", async () => {
-    await freshRecording({ live: false });
-    hold("KeyS", 1500);
-    await settle();
-    assert.deepStrictEqual(press.events, []);
-  });
-
-  await test("a release still goes out after the backlog has given up", async () => {
-    await freshRecording({ live: true });
-    press.holdAnswers = true;
-    down("KeyS");
-    await settle();
-    // Flood the queue past the limit so live send gives up, the way typing
-    // far ahead of the board does.
-    for (let i = 0; i < 40; i++) {
-      type("KeyA");
-      await settle(2);
-    }
-    press.holdAnswers = false;
-    while (press.waiting.length > 0) press.waiting.shift().resolve(jsonResponse({ ok: true }));
-    await settle();
-    assert.ok(
-      press.events.includes("up:S"),
-      "giving up on typing must not leave S held down on the console"
-    );
   });
 
   const failed = results.filter(([ok]) => !ok).length;

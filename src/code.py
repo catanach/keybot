@@ -50,34 +50,16 @@ def bad_request(request, message):
     return Response(request, "error: " + message, status=(400, "Bad Request"))
 
 
-def keycode_for(keycode_name):
+def press_fn(keycode_name, hold):
     keycode = getattr(Keycode, keycode_name, None)
     if keycode is None:
         raise ValueError("there is no key called '{}'".format(keycode_name))
-    return keycode
-
-
-def press_fn(keycode_name, hold):
-    # Blocks for the whole hold, so nothing is served while the key is
-    # down. Used by /press, where the handler already runs inside
-    # server.poll() and MAX_HOLD bounds the hold to a second. A recorded
-    # hold has no such bound and goes through key_down_fn and key_up_fn
-    # below instead, so the board keeps answering.
-    keycode = keycode_for(keycode_name)
     keyboard.press(keycode)
     try:
         time.sleep(hold)
     finally:
         # An interrupted wait must not leave the key down.
         keyboard.release(keycode)
-
-
-def key_down_fn(keycode_name):
-    keyboard.press(keycode_for(keycode_name))
-
-
-def key_up_fn(keycode_name):
-    keyboard.release(keycode_for(keycode_name))
 
 
 try:
@@ -97,21 +79,6 @@ DEPLOYABLE_FILES = ("code.py", "script_runner.py", "keycodes.py")
 
 # The longest a single /press may hold a key down.
 MAX_HOLD = 1.0
-
-# Keys the recorder is holding down right now, through /key_down. A real
-# hold cannot be one blocking request: /press would park the single-threaded
-# server for its whole duration, which is why MAX_HOLD exists. Down and up
-# are separate requests instead, so nothing blocks and the key stays down
-# for exactly as long as the finger does.
-live_keys = []
-
-# If the matching /key_up never arrives, because Wi-Fi dropped or the page
-# was closed mid-hold, the key would stay down on the console forever. The
-# main loop lets go of everything this long after the last /key_down.
-# Long enough that a deliberate hold is never cut short, short enough that
-# a key left down is noticed in the same sitting.
-LIVE_KEY_TIMEOUT = 30.0
-live_keys_deadline = None
 
 
 if KEYCODES:
@@ -153,15 +120,7 @@ try:
     # A client that connects and says nothing must not park the main loop.
     server.socket_timeout = 2
 
-    runner = ScriptRunner(
-        SCRIPT,
-        press_fn,
-        None,
-        keyboard.release_all,
-        server.poll,
-        key_down_fn=key_down_fn,
-        key_up_fn=key_up_fn,
-    )
+    runner = ScriptRunner(SCRIPT, press_fn, None, keyboard.release_all, server.poll)
     runner.sleep_fn = make_sleep_fn(server, runner)
 
     @server.route("/start")
@@ -187,8 +146,6 @@ try:
 
     @server.route("/stop")
     def stop_handler(request):
-        # Anything the recorder was holding goes down with the run.
-        release_live_keys()
         if request.query_params.get("after_current"):
             runner.finish_current_loop()
         else:
@@ -305,67 +262,6 @@ try:
             return bad_request(request, str(e))
         return Response(request, "ok")
 
-    def release_live_keys():
-        """Lets go of every key the recorder is holding. Safe to call at any
-        time: used by the watchdog, by /stop, and before a script starts, so
-        a live hold can never leak into a run."""
-        global live_keys_deadline
-        for name in list(live_keys):
-            try:
-                keyboard.release(keycode_for(name))
-            except Exception as e:
-                log_error("releasing a held key", e)
-        del live_keys[:]
-        live_keys_deadline = None
-
-    @server.route("/key_down")
-    def key_down_handler(request):
-        """Presses a key and returns at once, leaving it down. The recorder
-        calls this when a key goes down and /key_up when it comes up, so
-        what the console sees is the hold the person actually did."""
-        global live_keys_deadline
-        conflict = None
-        if runner.running:
-            conflict = "a script is running, so that key was not sent"
-        elif code_deploy_requested:
-            conflict = "the board is restarting, so that key was not sent"
-        if conflict:
-            return Response(request, conflict, status=(409, "Conflict"))
-        key = request.query_params.get("key")
-        if not key:
-            return bad_request(request, "key_down needs a key")
-        try:
-            keycode = keycode_for(key)
-        except ValueError as e:
-            return bad_request(request, str(e))
-        if key not in live_keys:
-            keyboard.press(keycode)
-            live_keys.append(key)
-        live_keys_deadline = time.monotonic() + LIVE_KEY_TIMEOUT
-        return Response(request, "ok")
-
-    @server.route("/key_up")
-    def key_up_handler(request):
-        """Lets go of one key. Answers ok even for a key that was not down,
-        so a retry or a duplicate release is never an error the recorder has
-        to reason about."""
-        global live_keys_deadline
-        key = request.query_params.get("key")
-        if not key:
-            return bad_request(request, "key_up needs a key")
-        try:
-            keycode = keycode_for(key)
-        except ValueError as e:
-            return bad_request(request, str(e))
-        try:
-            keyboard.release(keycode)
-        except Exception as e:
-            log_error("releasing a held key", e)
-        if key in live_keys:
-            live_keys.remove(key)
-        live_keys_deadline = None if not live_keys else live_keys_deadline
-        return Response(request, "ok")
-
     @server.route("/status")
     def status_handler(request):
         state = runner.status()
@@ -385,18 +281,7 @@ try:
                 time.sleep(0.5)
                 supervisor.reload()
 
-            # A hold whose /key_up never came is let go of here rather
-            # than left down on the console until someone notices.
-            if live_keys_deadline is not None and time.monotonic() > live_keys_deadline:
-                log_error(
-                    "a held key timed out",
-                    RuntimeError("no key_up within {}s".format(LIVE_KEY_TIMEOUT)),
-                )
-                release_live_keys()
-
             if runner.running:
-                if live_keys:
-                    release_live_keys()
                 runner.run_one_pass()
             else:
                 time.sleep(0.1)

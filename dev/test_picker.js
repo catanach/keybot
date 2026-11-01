@@ -13,7 +13,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
 const { execFileSync } = require("node:child_process");
-const { FakeElement, FakeEvent, document, parseFragment, elementsById , makeWindow } = require("./fake_dom.js");
+const { FakeElement, FakeEvent, document, parseFragment, elementsById } = require("./fake_dom.js");
 
 const REPO = path.resolve(__dirname, "..");
 const APP_JS = path.join(REPO, "webapp/app/static/app.js");
@@ -90,10 +90,9 @@ function fakeFetch(url, opts = {}) {
 loadTemplates();
 process.on("unhandledRejection", () => {});
 
-const testWindow = makeWindow();
 const context = vm.createContext({
   document,
-  window: testWindow,
+  window: { location: { href: "/" } },
   navigator: { platform: "MacIntel" },
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   fetch: fakeFetch,

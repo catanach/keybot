@@ -19,7 +19,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
-const { FakeEvent, document, elementsById, missingIds } = require("./fake_dom.js");
+const { FakeEvent, document, elementsById, missingIds , makeWindow } = require("./fake_dom.js");
 
 const REPO = path.resolve(__dirname, "..");
 const APP_JS = path.join(REPO, "webapp/app/static/app.js");
@@ -67,9 +67,10 @@ process.on("unhandledRejection", (e) => {
 // element it could not find.
 const warnings = [];
 
+const testWindow = makeWindow();
 const context = vm.createContext({
   document,
-  window: { location: { href: "/" } },
+  window: testWindow,
   navigator: { platform: "MacIntel" },
   localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
   fetch: fakeFetch,

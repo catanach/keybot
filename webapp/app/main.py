@@ -109,6 +109,10 @@ class PressIn(BaseModel):
     hold: float = 0.1
 
 
+class KeyIn(BaseModel):
+    key: str
+
+
 async def parse_body(request: Request, model):
     try:
         raw = await request.json()
@@ -337,6 +341,41 @@ async def api_device_press(request: Request):
         return error(_busy_message(str(e)), 409)
     except device.DeviceError as e:
         return error(str(e), 502)
+    return JSONResponse({"ok": True})
+
+
+async def api_device_key_down(request: Request):
+    """Holds a key down and returns at once. The recorder sends this when a
+    key goes down and key-up when it comes up, so a hold on the keyboard is
+    a hold on the console."""
+    body, err = await parse_body(request, KeyIn)
+    if err:
+        return err
+    try:
+        await device.key_down(body.key)
+    except device.DeviceBusy as e:
+        return error(_busy_message(str(e)), 409)
+    except device.DeviceError as e:
+        return error(str(e), 502)
+    return JSONResponse({"ok": True})
+
+
+async def api_device_key_up(request: Request):
+    """Lets go of a key."""
+    body, err = await parse_body(request, KeyIn)
+    if err:
+        return err
+    try:
+        await device.key_up(body.key)
+    except device.DeviceError as e:
+        return error(str(e), 502)
+    return JSONResponse({"ok": True})
+
+
+async def api_device_wake(request: Request):
+    """Called when a take starts, so the board is already polling fast by
+    the time the first key is pressed."""
+    await device.wake_for_recording()
     return JSONResponse({"ok": True})
 
 
@@ -804,6 +843,9 @@ routes = [
     Route("/api/device/status", api_device_status, methods=["GET"]),
     Route("/api/device/stop", api_device_stop, methods=["POST"]),
     Route("/api/device/press", api_device_press, methods=["POST"]),
+    Route("/api/device/key-down", api_device_key_down, methods=["POST"]),
+    Route("/api/device/key-up", api_device_key_up, methods=["POST"]),
+    Route("/api/device/wake", api_device_wake, methods=["POST"]),
     Route("/api/device/press/supported", api_device_press_supported, methods=["GET"]),
     Route("/api/device/host-writes", api_device_host_writes, methods=["POST"]),
     Route("/api/device/deploy", api_device_deploy, methods=["POST"]),

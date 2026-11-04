@@ -65,12 +65,34 @@ except (OSError, ValueError):
     SCRIPT = DEFAULT_SCRIPT
 
 
-def press_fn(keycode_name, hold):
+# What a real board would be holding down right now, from /key_down. The
+# Pico keeps the same list so a hold is a hold on the console rather than a
+# tap; this mirrors it so the dev server and the board stay the same shape.
+live_keys = []
+
+
+def check_key(keycode_name):
     # No real key is pressed here, but an unknown key name has to fail the
     # same way it does on the Pico, where it's an error from Keycode.
     if keycode_name not in KEYCODE_NAMES:
         raise ValueError("there is no key called '{}'".format(keycode_name))
+
+
+def press_fn(keycode_name, hold):
+    check_key(keycode_name)
     time.sleep(hold)
+
+
+def key_down_fn(keycode_name):
+    check_key(keycode_name)
+    if keycode_name not in live_keys:
+        live_keys.append(keycode_name)
+
+
+def key_up_fn(keycode_name):
+    check_key(keycode_name)
+    if keycode_name in live_keys:
+        live_keys.remove(keycode_name)
 
 
 def sleep_fn(duration):
@@ -84,9 +106,9 @@ def sleep_fn(duration):
 
 
 def release_fn():
-    # Nothing is really held down here; the Pico releases every key at
-    # this point, so the shape of a run matches.
-    pass
+    # The Pico releases every key at this point, so the shape of a run
+    # matches. With holds there is now something real to drop.
+    del live_keys[:]
 
 
 # tick_fn mirrors the firmware: the real board serves HTTP here. This dev

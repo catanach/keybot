@@ -50,16 +50,57 @@ def bad_request(request, message):
     return Response(request, "error: " + message, status=(400, "Bad Request"))
 
 
-def press_fn(keycode_name, hold):
+def keycode_for(keycode_name):
     keycode = getattr(Keycode, keycode_name, None)
     if keycode is None:
         raise ValueError("there is no key called '{}'".format(keycode_name))
+    return keycode
+
+
+def press_fn(keycode_name, hold):
+    """Blocks for the whole hold, so nothing is served while the key is
+    down. Used by /press, where the handler already runs inside
+    server.poll() and MAX_HOLD bounds the hold to a second."""
+    keycode = keycode_for(keycode_name)
     keyboard.press(keycode)
     try:
         time.sleep(hold)
     finally:
         # An interrupted wait must not leave the key down.
         keyboard.release(keycode)
+
+
+def make_playback_press(server, runner):
+    """A press for running a saved script, where a hold can be any length.
+
+    The blocking press above would leave the board unanswerable for the
+    whole hold, so a long recorded hold looked like lost contact and Stop
+    could not cut it short. This serves the web server while the key is
+    down, like make_sleep_fn does for a wait.
+
+    Attached to runner.press_fn after the runner exists, which is an
+    attribute assignment rather than a change to ScriptRunner. That keeps
+    code.py and script_runner.py compatible in both directions, which is
+    what stops a half-finished deploy from making the board unbootable.
+
+    The slice is small on purpose: make_sleep_fn's 0.1 would turn an
+    ordinary 0.1 second tap into a 0.2 second one.
+    """
+
+    def press(keycode_name, hold):
+        keycode = keycode_for(keycode_name)
+        keyboard.press(keycode)
+        try:
+            end_time = time.monotonic_ns() + int(hold * 1000000000)
+            while time.monotonic_ns() < end_time:
+                server.poll()
+                if runner.stop_requested:
+                    return
+                time.sleep(0.002)
+        finally:
+            keyboard.release(keycode)
+
+    return press
 
 
 try:
@@ -79,6 +120,25 @@ DEPLOYABLE_FILES = ("code.py", "script_runner.py", "keycodes.py")
 
 # The longest a single /press may hold a key down.
 MAX_HOLD = 1.0
+
+# Keys the recorder is holding right now, through /key_down. A hold cannot
+# be one blocking request: /press parks the whole board for its duration,
+# which is what MAX_HOLD is there to bound. Down and up are separate
+# requests, so nothing blocks and the key is down for as long as the finger.
+live_keys = []
+
+# While a recording is going the board must answer immediately. Measured on
+# this board before this change: every request cost about 110ms whatever it
+# asked for, because the idle branch of the main loop sleeps before it polls
+# again. At two requests per keystroke that caps live typing near four keys
+# a second, which is why keys could not keep up with a person.
+#
+# Inside the window the loop gives up its sleep. Outside it the old sleep
+# comes back, so an idle board is not spinning at full tilt for hours.
+LIVE_WINDOW = 45.0
+LIVE_SLEEP = 0.0005
+IDLE_SLEEP = 0.1
+live_until = 0.0
 
 
 if KEYCODES:
@@ -116,12 +176,16 @@ try:
     )
 
     pool = socketpool.SocketPool(wifi.radio)
-    server = Server(pool, debug=True)
+    # debug printing costs real time per request on this chip, and the
+    # recorder sends two requests per keystroke.
+    server = Server(pool, debug=False)
     # A client that connects and says nothing must not park the main loop.
     server.socket_timeout = 2
 
     runner = ScriptRunner(SCRIPT, press_fn, None, keyboard.release_all, server.poll)
     runner.sleep_fn = make_sleep_fn(server, runner)
+    # Playback holds keep the board answering. See make_playback_press.
+    runner.press_fn = make_playback_press(server, runner)
 
     @server.route("/start")
     def start_handler(request):
@@ -146,6 +210,8 @@ try:
 
     @server.route("/stop")
     def stop_handler(request):
+        # Anything the recorder is holding goes down with the run.
+        release_live_keys()
         if request.query_params.get("after_current"):
             runner.finish_current_loop()
         else:
@@ -262,8 +328,73 @@ try:
             return bad_request(request, str(e))
         return Response(request, "ok")
 
+    def release_live_keys():
+        """Lets go of anything the recorder is holding. Called where a held
+        key would otherwise leak into something else: a run starting, and
+        Stop. Not a timeout, which Rosy ruled out."""
+        for name in list(live_keys):
+            try:
+                keyboard.release(keycode_for(name))
+            except Exception as e:
+                log_error("releasing a held key", e)
+        del live_keys[:]
+
+    @server.route("/key_down")
+    def key_down_handler(request):
+        """Presses a key and returns at once, leaving it down. With /key_up
+        this is what makes the console see the hold the person actually
+        did, which one /press can never do because it blocks."""
+        global live_until
+        conflict = None
+        if runner.running:
+            conflict = "a script is running, so that key was not sent"
+        elif code_deploy_requested:
+            conflict = "the board is restarting, so that key was not sent"
+        if conflict:
+            return Response(request, conflict, status=(409, "Conflict"))
+        key = request.query_params.get("key")
+        if not key:
+            return bad_request(request, "key_down needs a key")
+        try:
+            keycode = keycode_for(key)
+        except ValueError as e:
+            return bad_request(request, str(e))
+        live_until = time.monotonic() + LIVE_WINDOW
+        if key not in live_keys:
+            keyboard.press(keycode)
+            live_keys.append(key)
+        return Response(request, "ok")
+
+    @server.route("/key_up")
+    def key_up_handler(request):
+        """Lets go of one key. Answers ok for a key that was not down, so a
+        repeat or an out of order release is never something the recorder
+        has to reason about."""
+        global live_until
+        key = request.query_params.get("key")
+        if not key:
+            return bad_request(request, "key_up needs a key")
+        try:
+            keycode = keycode_for(key)
+        except ValueError as e:
+            return bad_request(request, str(e))
+        live_until = time.monotonic() + LIVE_WINDOW
+        try:
+            keyboard.release(keycode)
+        except Exception as e:
+            log_error("releasing a held key", e)
+        if key in live_keys:
+            live_keys.remove(key)
+        return Response(request, "ok")
+
     @server.route("/status")
     def status_handler(request):
+        # The recorder calls this with live=1 when a take starts, so the
+        # loop is already polling fast before the first key arrives rather
+        # than the first key paying the old cost and the rest being quick.
+        if request.query_params.get("live"):
+            global live_until
+            live_until = time.monotonic() + LIVE_WINDOW
         state = runner.status()
         state["last_fault"] = last_fault
         # Free heap, so a program's size limit can be set from a real
@@ -282,9 +413,15 @@ try:
                 supervisor.reload()
 
             if runner.running:
+                if live_keys:
+                    release_live_keys()
                 runner.run_one_pass()
             else:
-                time.sleep(0.1)
+                # Inside the recording window the sleep is what the latency
+                # was. Outside it the board is idle and should stay cool.
+                time.sleep(
+                    LIVE_SLEEP if time.monotonic() < live_until else IDLE_SLEEP
+                )
         except Exception as e:
             # Nothing may end this loop -- that is what used to leave the
             # board silent until it was unplugged. Note it and serve on.

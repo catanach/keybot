@@ -78,6 +78,52 @@ async def press(key: str, hold: float) -> None:
         raise DeviceError(f"device refused the key: {resp.text}")
 
 
+# A key event has to be quick or live typing stalls, so these use a short
+# fixed timeout rather than press()'s hold-derived one, and like press()
+# they do not take _device_lock: a keystroke queued behind a status poll is
+# a keystroke that arrives late.
+KEY_TIMEOUT = 2.0
+
+
+async def key_down(key: str) -> None:
+    """Presses a key on the device and leaves it down."""
+    url = f"{settings.get_device_url()}/key_down"
+    try:
+        async with httpx.AsyncClient(timeout=KEY_TIMEOUT) as client:
+            resp = await client.get(url, params={"key": key})
+    except httpx.RequestError as e:
+        raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
+    if resp.status_code == 409:
+        raise DeviceBusy(resp.text)
+    if resp.status_code != 200:
+        raise DeviceError(f"device refused the key: {resp.text}")
+
+
+async def key_up(key: str) -> None:
+    """Lets go of a key. The board answers ok even for a key it was not
+    holding, so a duplicate release is never an error worth showing."""
+    url = f"{settings.get_device_url()}/key_up"
+    try:
+        async with httpx.AsyncClient(timeout=KEY_TIMEOUT) as client:
+            resp = await client.get(url, params={"key": key})
+    except httpx.RequestError as e:
+        raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
+    if resp.status_code != 200:
+        raise DeviceError(f"device would not release the key: {resp.text}")
+
+
+async def wake_for_recording() -> None:
+    """Tells the board a take is starting so it polls fast before the first
+    key arrives. Best effort: if it fails the keys still work, they just pay
+    the old cost on the first one."""
+    url = f"{settings.get_device_url()}/status"
+    try:
+        async with httpx.AsyncClient(timeout=KEY_TIMEOUT) as client:
+            await client.get(url, params={"live": "1"})
+    except httpx.RequestError:
+        pass
+
+
 async def press_supported() -> bool:
     """Whether the firmware on the board has /press at all.
 
@@ -86,7 +132,9 @@ async def press_supported() -> bool:
     does not have it answers 404. That needs no extra endpoint on the file
     with the least room to spare, and presses no real key to find out.
     """
-    url = f"{settings.get_device_url()}/press"
+    # /key_down, not /press: that is what live send needs now, and a board
+    # on older firmware has /press but not this one.
+    url = f"{settings.get_device_url()}/key_down"
     try:
         async with _device_lock, httpx.AsyncClient(timeout=TIMEOUT) as client:
             resp = await client.get(url)

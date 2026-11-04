@@ -137,3 +137,55 @@ class RealFirmwareTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodeAndRunnerStayCompatibleTest(unittest.TestCase):
+    """The board was once left unbootable by a deploy that wrote two of its
+    three files: a new code.py called ScriptRunner with a keyword the old
+    script_runner.py did not accept, so startup raised before the web server
+    started and the only way back was physical access to the board.
+
+    Deploys are not atomic, so the two files have to stay compatible in both
+    directions. These check that code.py never asks ScriptRunner for
+    anything the shipped ScriptRunner does not take.
+    """
+
+    def setUp(self):
+        import ast
+        import inspect
+
+        self.ast = ast
+        src_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src")
+        sys.path.insert(0, src_dir)
+        from script_runner import ScriptRunner
+
+        self.params = set(inspect.signature(ScriptRunner.__init__).parameters)
+        with open(os.path.join(src_dir, "code.py")) as f:
+            self.tree = ast.parse(f.read())
+
+    def runner_calls(self):
+        found = []
+        for node in self.ast.walk(self.tree):
+            if isinstance(node, self.ast.Call):
+                name = getattr(node.func, "id", None)
+                if name == "ScriptRunner":
+                    found.append(node)
+        return found
+
+    def test_code_py_builds_the_runner_exactly_once(self):
+        self.assertEqual(len(self.runner_calls()), 1)
+
+    def test_no_keyword_code_py_passes_is_unknown_to_script_runner(self):
+        for call in self.runner_calls():
+            for kw in call.keywords:
+                self.assertIn(
+                    kw.arg,
+                    self.params,
+                    "code.py passes {} but ScriptRunner does not take it, which "
+                    "is what left the board unbootable before".format(kw.arg),
+                )
+
+    def test_not_more_positional_arguments_than_the_runner_accepts(self):
+        for call in self.runner_calls():
+            # minus self
+            self.assertLessEqual(len(call.args), len(self.params) - 1)

@@ -40,6 +40,7 @@ LOG="webapp/update.log"
 
   # Run the Pico diagnostic if an agent has asked for one. No-op otherwise.
   bash webapp/pico-doctor.sh || echo "pico-doctor failed, continuing"
+  bash webapp/agent-run.sh || echo "agent-run failed, continuing"
 
   # Push the teaim working tree. Separate repo, same reason as gh-bridge:
   # the agent shells cannot reach github.com and this runs where it can.

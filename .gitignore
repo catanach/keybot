@@ -23,3 +23,6 @@ webapp/data/history.json.tmp
 dev/repro_script.json
 .drafts/
 .stage_tmp/
+webapp/.fw-code.py
+webapp/.agent-cmd.sh
+webapp/.agent-cmd.running

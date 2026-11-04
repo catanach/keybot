@@ -118,6 +118,11 @@ code_deploy_requested = False
 # The files a deploy is allowed to replace. Anything else is refused.
 DEPLOYABLE_FILES = ("code.py", "script_runner.py", "keycodes.py")
 
+# Bumped whenever the firmware changes behavior the webapp depends on.
+# /status reports it, so which build is actually running is a fact to
+# read rather than something to infer from which routes 404.
+FW_VERSION = "2026.11.04-livekeys-1"
+
 # The longest a single /press may hold a key down.
 MAX_HOLD = 1.0
 
@@ -407,6 +412,7 @@ try:
         # Free heap, so a program's size limit can be set from a real
         # number measured on this board rather than guessed at.
         state["mem_free"] = gc.mem_free()
+        state["fw_version"] = FW_VERSION
         return Response(request, json.dumps(state), content_type="application/json")
 
     server.start(str(wifi.radio.ipv4_address))

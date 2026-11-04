@@ -136,7 +136,10 @@ live_keys = []
 # Inside the window the loop gives up its sleep. Outside it the old sleep
 # comes back, so an idle board is not spinning at full tilt for hours.
 LIVE_WINDOW = 45.0
-LIVE_SLEEP = 0.0005
+# 2ms, not something smaller: a sleep this short can round to nothing and
+# leave the loop spinning flat out for the whole window, and 2ms is still
+# nothing against the 100ms this replaces.
+LIVE_SLEEP = 0.002
 IDLE_SLEEP = 0.1
 live_until = 0.0
 
@@ -361,7 +364,11 @@ try:
             return bad_request(request, str(e))
         live_until = time.monotonic() + LIVE_WINDOW
         if key not in live_keys:
-            keyboard.press(keycode)
+            try:
+                keyboard.press(keycode)
+            except Exception as e:
+                log_error("pressing a key", e)
+                return bad_request(request, "could not press that key")
             live_keys.append(key)
         return Response(request, "ok")
 
@@ -389,11 +396,11 @@ try:
 
     @server.route("/status")
     def status_handler(request):
+        global live_until
         # The recorder calls this with live=1 when a take starts, so the
         # loop is already polling fast before the first key arrives rather
         # than the first key paying the old cost and the rest being quick.
-        if request.query_params.get("live"):
-            global live_until
+        if request.query_params.get("live") not in (None, "", "0"):
             live_until = time.monotonic() + LIVE_WINDOW
         state = runner.status()
         state["last_fault"] = last_fault
@@ -409,6 +416,9 @@ try:
             server.poll()
 
             if code_deploy_requested and not runner.running:
+                # A key held through a restart stays down: reload() does not
+                # reset the HID report, so let go before going away.
+                release_live_keys()
                 time.sleep(0.5)
                 supervisor.reload()
 

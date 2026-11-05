@@ -31,6 +31,10 @@ const press = {
   waiting: [],
   holdAnswers: false,
   supported: true,
+  // What the board reports it actually held the key for, in seconds, on the
+  // key-up response. null stands for firmware that reports nothing, which is
+  // also what a duplicate or out of order release gets.
+  heldAnswer: null,
 };
 
 function jsonResponse(body, ok = true, status = 200) {
@@ -82,7 +86,9 @@ function fakeFetch(url, opts = {}) {
   if (url === "/api/device/key-up") {
     const key = JSON.parse(opts.body).key;
     press.events.push("up:" + key);
-    return Promise.resolve(jsonResponse({ ok: true }));
+    const body = { ok: true };
+    if (press.heldAnswer !== null) body.held = press.heldAnswer;
+    return Promise.resolve(jsonResponse(body));
   }
   if (url === "/api/device/wake") {
     press.wakes++;
@@ -217,6 +223,7 @@ async function freshRecording({ live = true } = {}) {
   context.resetRecording();
   press.sent = [];
   press.events = [];
+  press.heldAnswer = null;
   liveToggle.checked = live;
   context.startRecording();
   await settle();
@@ -487,6 +494,92 @@ async function main() {
       press.events.includes("up:S"),
       "giving up on typing must not strand S on the console"
     );
+  });
+
+  // The hold the board reports beats the one the browser timed
+  //
+  // The browser measures the finger: keydown to keyup. The board measures
+  // the press it actually made, which is what the console saw and what
+  // playback will reproduce. The two differ by the gap between the down
+  // request's latency and the up request's, so the board's figure wins.
+
+  await test("the hold the board reports replaces the one the browser timed", async () => {
+    await freshRecording({ live: true });
+    press.heldAnswer = 2.063;
+    hold("KeyS", 2000);
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [["press", "S", 2.06]]);
+  });
+
+  await test("holds keep hundredths, so the board's figure is not rounded away", async () => {
+    await freshRecording({ live: true });
+    press.heldAnswer = 1.24;
+    hold("KeyS", 1200);
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [["press", "S", 1.24]]);
+  });
+
+  await test("a board that reports nothing leaves the browser's figure alone", async () => {
+    await freshRecording({ live: true });
+    press.heldAnswer = null;
+    hold("KeyS", 2000);
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [["press", "S", 2]]);
+  });
+
+  await test("with the switch off the browser's figure is what gets saved", async () => {
+    await freshRecording({ live: false });
+    press.heldAnswer = 9.99;
+    hold("KeyS", 1500);
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(
+      steps,
+      [["press", "S", 1.5]],
+      "nothing was sent, so the board has nothing to report about"
+    );
+  });
+
+  await test("a board-reported tap still gets the floor, not a hold too short to feel", async () => {
+    await freshRecording({ live: true });
+    press.heldAnswer = 0.012;
+    type("KeyA");
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [["press", "A", 0.1]]);
+  });
+
+  await test("waits stay on the 0.1 grid", async () => {
+    await freshRecording({ live: true });
+    press.heldAnswer = 0.5;
+    hold("KeyS", 500);
+    pause(1370);
+    hold("KeyD", 500);
+    const steps = await saveAndReadSteps();
+    assert.deepStrictEqual(steps, [
+      ["press", "S", 0.5],
+      ["wait", 1.4],
+      ["press", "D", 0.5],
+    ]);
+  });
+
+  await test("a save does not outrun the board's answer", async () => {
+    await freshRecording({ live: true });
+    press.heldAnswer = 3.21;
+    down("KeyS");
+    await settle();
+    pause(3200);
+    // The release is answered only after Save has been asked for, which is
+    // the race: without waiting for the queue, the last key of a take keeps
+    // the browser's estimate.
+    press.holdAnswers = true;
+    up("KeyS");
+    const saving = saveAndReadSteps();
+    await settle();
+    press.holdAnswers = false;
+    while (press.waiting.length > 0) {
+      press.waiting.shift().resolve(jsonResponse({ ok: true, held: 3.21 }));
+    }
+    const steps = await saving;
+    assert.deepStrictEqual(steps, [["press", "S", 3.21]]);
   });
 
   const failed = results.filter(([ok]) => !ok).length;

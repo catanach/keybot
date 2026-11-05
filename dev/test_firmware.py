@@ -135,10 +135,6 @@ class RealFirmwareTest(unittest.TestCase):
             self.assertLess(sent_size, 12000, name + " is too big to send")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class CodeAndRunnerStayCompatibleTest(unittest.TestCase):
     """The board was once left unbootable by a deploy that wrote two of its
     three files: a new code.py called ScriptRunner with a keyword the old
@@ -189,3 +185,78 @@ class CodeAndRunnerStayCompatibleTest(unittest.TestCase):
         for call in self.runner_calls():
             # minus self
             self.assertLessEqual(len(call.args), len(self.params) - 1)
+
+
+class KeyUpReportsTheHoldTest(unittest.TestCase):
+    """The recorder trusts the board's own measurement of a hold over the
+    one it times in the browser, because playback reproduces whatever is in
+    the script and the browser's figure is off by the difference between the
+    two requests' latencies.
+
+    code.py cannot be imported here: it needs wifi, usb_hid and the adafruit
+    libraries. So these read the source, which is enough to catch the
+    bookkeeping going out of step -- a press time recorded and never read, a
+    release that reports nothing, a table that grows forever.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.source = (firmware.FIRMWARE_DIR / "code.py").read_text()
+        cls.tree = ast.parse(cls.source)
+        cls.handlers = {
+            node.name: node
+            for node in ast.walk(cls.tree)
+            if isinstance(node, ast.FunctionDef)
+        }
+
+    def body_of(self, name):
+        self.assertIn(name, self.handlers, name + " is gone from code.py")
+        return ast.dump(self.handlers[name])
+
+    def test_key_down_records_when_it_pressed(self):
+        body = self.body_of("key_down_handler")
+        self.assertIn("live_down_at", body, "nothing remembers when the key went down")
+        self.assertIn("monotonic_ns", body, "the press time is not taken from the clock")
+
+    def test_key_up_reports_the_hold_it_measured(self):
+        body = self.body_of("key_up_handler")
+        self.assertIn("live_down_at", body, "the release does not read the press time")
+        self.assertIn("'held'", body, "the release does not report the hold")
+
+    def test_key_up_does_not_leave_the_press_time_behind(self):
+        # pop, not a plain read: a key pressed and released over and over
+        # through a long take would otherwise grow this table forever on a
+        # board with about 50KB of heap to spare.
+        self.assertIn(
+            "attr='pop'",
+            self.body_of("key_up_handler"),
+            "the press time is read without being removed",
+        )
+
+    def test_letting_go_of_everything_forgets_the_press_times_too(self):
+        # release_live_keys runs when a script starts and on Stop. Clearing
+        # the keys but not their press times would leave a stale time for a
+        # key pressed again later.
+        self.assertIn(
+            "live_down_at",
+            self.body_of("release_live_keys"),
+            "release_live_keys clears the keys but not when they went down",
+        )
+
+    def test_the_running_build_is_reported(self):
+        # Which firmware is on the board was once guesswork from which
+        # routes answered, and that guess was wrong twice in one session.
+        self.assertRegex(
+            self.source,
+            r'FW_VERSION\s*=\s*"[^"]+"',
+            "code.py does not name its own version",
+        )
+        self.assertIn(
+            "fw_version",
+            self.body_of("status_handler"),
+            "/status does not report the firmware version",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()

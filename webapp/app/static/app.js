@@ -297,12 +297,15 @@ const liveSend = {
 // after they were typed -- worse than not sending them at all.
 const LIVE_BACKLOG_LIMIT = 10;
 
-// The hold each live key gets, matching the 0.1 recorded for the step, so
-// what the PS5 feels now is what it will feel on replay.
-const LIVE_HOLD = 0.1;
+// Holds are recorded to the hundredth of a second. Waits stay on the 0.1
+// grid they were designed around. The extra digit is here because the board
+// reports the hold it actually produced and that figure differs from a
+// browser-timed one by tens of milliseconds: at 0.1 granularity the
+// correction would round away and never be seen.
+const HOLD_PRECISION_DP = 2;
 // The shortest hold a recorded press can carry. A tap measures a few
-// milliseconds and the board rounds nothing, so without a floor a quick
-// press would be saved as a press of zero seconds.
+// milliseconds, and a hold that short is one the console can miss entirely
+// between frames, so a tap is saved as a press it will actually feel.
 const HOLD_FLOOR = 0.1;
 
 const LIVE_UNREACHABLE_NOTE =
@@ -362,7 +365,7 @@ function updateRecordingBanner() {
 // down is sent as a key going down, and the release is its own message. One
 // /press could never hold anything, because it blocks the board for the
 // length of the hold, which is why holding a key looked like a tap.
-function queueLiveKey(key, kind = "down") {
+function queueLiveKey(key, kind = "down", stepIndex = null) {
   if (liveSend.gaveUp && kind !== "up") return;
   if (kind !== "up" && liveSend.queue.length >= LIVE_BACKLOG_LIMIT) {
     liveSend.gaveUp = true;
@@ -374,7 +377,7 @@ function queueLiveKey(key, kind = "down") {
     sendQueuedKeys();
     return;
   }
-  liveSend.queue.push({ key, kind });
+  liveSend.queue.push({ key, kind, stepIndex });
   sendQueuedKeys();
 }
 
@@ -388,10 +391,12 @@ async function sendQueuedKeys() {
       liveSend.queue.length > 0 &&
       (!liveSend.gaveUp || liveSend.queue[0].kind === "up")
     ) {
-      const { key, kind } = liveSend.queue.shift();
+      const { key, kind, stepIndex } = liveSend.queue.shift();
       try {
-        if (kind === "up") await api.deviceKeyUp(key);
-        else await api.deviceKeyDown(key);
+        if (kind === "up") {
+          const result = await api.deviceKeyUp(key);
+          applyBoardHold(stepIndex, result && result.held);
+        } else await api.deviceKeyDown(key);
         // Only a key that went down proves typing is getting through. A
         // release succeeding says nothing about that, and clearing the
         // warning on one would wipe a real "not reaching the Pico" the
@@ -824,11 +829,49 @@ async function loadKeycodes() {
   return true;
 }
 
-// Rounds a measured hold to the 0.1s granularity the recorder already uses
-// for waits, never below the floor.
+// Rounds a hold in seconds, never below the floor.
+function roundHold(seconds) {
+  const scale = Math.pow(10, HOLD_PRECISION_DP);
+  return Math.max(HOLD_FLOOR, Math.round(seconds * scale) / scale);
+}
+
+// The browser's own estimate of a hold: the gap between its keydown and its
+// keyup. Used while the key is still down, and as the final figure when live
+// send is off, because then the board was never asked to hold anything and
+// has nothing to report.
 function holdSecondsFrom(startedAt, endedAt) {
-  const measured = (endedAt - startedAt) / 1000;
-  return Math.max(HOLD_FLOOR, Math.round(measured * 10) / 10);
+  return roundHold((endedAt - startedAt) / 1000);
+}
+
+// Replaces a step's duration with the one the board measured. The board
+// timed the press it actually made, which is the hold the console saw and
+// the hold playback will reproduce, so it wins over the browser's estimate
+// wherever it is available.
+function applyBoardHold(stepIndex, held) {
+  if (stepIndex === null || stepIndex === undefined) return;
+  if (typeof held !== "number" || !isFinite(held) || held < 0) return;
+  const step = recordingState.capturedScript[stepIndex];
+  if (!step || step[0] !== "press") return;
+  const seconds = roundHold(held);
+  if (step[2] === seconds) return;
+  step[2] = seconds;
+  // The take may already have stopped and the save panel be open: the
+  // response arrives on its own schedule. The draft is what a reload reads
+  // and what Save reads, so it is updated either way; the live preview only
+  // exists while recording.
+  if (recordingState.isRecording) updateRecordingPreview();
+  saveRecordingDraft();
+}
+
+// Save has to wait for the queue, or the last key of a take is written with
+// the browser's estimate while the board's figure is still in flight. The
+// deadline is there so an unreachable board delays a save rather than
+// blocking it.
+async function whenLiveKeysSettled(deadlineMs = 3000) {
+  const until = Date.now() + deadlineMs;
+  while ((liveSend.sending || liveSend.queue.length > 0) && Date.now() < until) {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
 }
 
 // Writes the real duration onto the step for the key that is down, and
@@ -845,7 +888,7 @@ function closeHold(endedAt) {
   // the key-down instead, every wait after a hold counts the hold twice.
   recordingState.lastKeyTime = endedAt;
   recordingState.elapsedSeconds = (endedAt - recordingState.startTime) / 1000;
-  if (hold.sentLive) queueLiveKey(hold.keyCode, "up");
+  if (hold.sentLive) queueLiveKey(hold.keyCode, "up", hold.stepIndex);
   updateRecordingPreview();
   return { key: hold.keyCode, seconds };
 }
@@ -976,6 +1019,7 @@ function editorIsShowingTarget() {
 }
 
 async function saveRecordedScript() {
+  await whenLiveKeysSettled();
   const steps = recordingState.capturedScript;
   if (steps.length === 0) {
     recordingError.textContent = "No keystrokes recorded.";

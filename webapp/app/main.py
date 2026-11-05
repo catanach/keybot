@@ -366,10 +366,16 @@ async def api_device_key_up(request: Request):
     if err:
         return err
     try:
-        await device.key_up(body.key)
+        held = await device.key_up(body.key)
     except device.DeviceError as e:
         return error(str(e), 502)
-    return JSONResponse({"ok": True})
+    # Passed straight through to the recorder, which writes it onto the step
+    # in place of the duration it timed in the browser. Absent when the
+    # board had nothing to report.
+    out = {"ok": True}
+    if held is not None:
+        out["held"] = held
+    return JSONResponse(out)
 
 
 async def api_device_wake(request: Request):

@@ -121,7 +121,7 @@ DEPLOYABLE_FILES = ("code.py", "script_runner.py", "keycodes.py")
 # Bumped whenever the firmware changes behavior the webapp depends on.
 # /status reports it, so which build is actually running is a fact to
 # read rather than something to infer from which routes 404.
-FW_VERSION = "2026.11.04-livekeys-1"
+FW_VERSION = "2026.11.05-heldtime-1"
 
 # The longest a single /press may hold a key down.
 MAX_HOLD = 1.0
@@ -131,6 +131,16 @@ MAX_HOLD = 1.0
 # which is what MAX_HOLD is there to bound. Down and up are separate
 # requests, so nothing blocks and the key is down for as long as the finger.
 live_keys = []
+
+# When each held key was pressed, by the board's own clock. /key_up
+# subtracts to report the hold the console actually saw. The recorder
+# used to time the hold in the browser, which measures the finger rather
+# than the console and is off by the difference between the down
+# request's latency and the up request's. Playback reproduces whatever
+# number the script holds, so the number has to be the console's.
+live_down_at = {}
+
+JSON = "application/json"
 
 # While a recording is going the board must answer immediately. Measured on
 # this board before this change: every request cost about 110ms whatever it
@@ -346,6 +356,7 @@ try:
             except Exception as e:
                 log_error("releasing a held key", e)
         del live_keys[:]
+        live_down_at.clear()
 
     @server.route("/key_down")
     def key_down_handler(request):
@@ -375,7 +386,8 @@ try:
                 log_error("pressing a key", e)
                 return bad_request(request, "could not press that key")
             live_keys.append(key)
-        return Response(request, "ok")
+            live_down_at[key] = time.monotonic_ns()
+        return Response(request, '{"ok": true}', content_type=JSON)
 
     @server.route("/key_up")
     def key_up_handler(request):
@@ -395,9 +407,17 @@ try:
             keyboard.release(keycode)
         except Exception as e:
             log_error("releasing a held key", e)
+        # Read before the key is forgotten. Absent for a key that was not
+        # down -- a duplicate or out of order release -- which the recorder
+        # reads as "no measurement" and leaves its own estimate alone.
+        down_at = live_down_at.pop(key, None)
+        held = None
+        if down_at is not None:
+            held = (time.monotonic_ns() - down_at) / 1000000000
         if key in live_keys:
             live_keys.remove(key)
-        return Response(request, "ok")
+        body = {"ok": True} if held is None else {"ok": True, "held": held}
+        return Response(request, json.dumps(body), content_type=JSON)
 
     @server.route("/status")
     def status_handler(request):
@@ -413,7 +433,7 @@ try:
         # number measured on this board rather than guessed at.
         state["mem_free"] = gc.mem_free()
         state["fw_version"] = FW_VERSION
-        return Response(request, json.dumps(state), content_type="application/json")
+        return Response(request, json.dumps(state), content_type=JSON)
 
     server.start(str(wifi.radio.ipv4_address))
 

@@ -99,9 +99,20 @@ async def key_down(key: str) -> None:
         raise DeviceError(f"device refused the key: {resp.text}")
 
 
-async def key_up(key: str) -> None:
+async def key_up(key: str) -> float | None:
     """Lets go of a key. The board answers ok even for a key it was not
-    holding, so a duplicate release is never an error worth showing."""
+    holding, so a duplicate release is never an error worth showing.
+
+    Returns how long the board actually held the key, in seconds, as the
+    board measured it. That is the figure the recorder wants: playback
+    reproduces whatever hold the script carries, so the script should carry
+    the hold the console saw rather than one timed in the browser, which is
+    off by the difference between the two requests' latencies.
+
+    None when the board did not report one, which means it was not holding
+    that key -- a duplicate or out of order release -- or it is running
+    older firmware. Either way the caller keeps its own estimate.
+    """
     url = f"{settings.get_device_url()}/key_up"
     try:
         async with httpx.AsyncClient(timeout=KEY_TIMEOUT) as client:
@@ -110,6 +121,12 @@ async def key_up(key: str) -> None:
         raise DeviceError(f"can't reach device at {settings.get_device_url()}: {e}")
     if resp.status_code != 200:
         raise DeviceError(f"device would not release the key: {resp.text}")
+    try:
+        held = resp.json().get("held")
+    except ValueError:
+        # Older firmware answered with the bare word "ok".
+        return None
+    return float(held) if isinstance(held, (int, float)) else None
 
 
 async def wake_for_recording() -> None:

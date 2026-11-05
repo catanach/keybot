@@ -91,12 +91,12 @@ def make_playback_press(server, runner):
         keycode = keycode_for(keycode_name)
         keyboard.press(keycode)
         try:
-            end_time = time.monotonic_ns() + int(hold * 1000000000)
-            while time.monotonic_ns() < end_time:
-                server.poll()
-                if runner.stop_requested:
-                    return
-                time.sleep(0.002)
+            wait_until(
+                server,
+                runner,
+                time.monotonic_ns() + int(hold * 1000000000),
+                2000000,
+            )
         finally:
             keyboard.release(keycode)
 
@@ -121,7 +121,7 @@ DEPLOYABLE_FILES = ("code.py", "script_runner.py", "keycodes.py")
 # Bumped whenever the firmware changes behavior the webapp depends on.
 # /status reports it, so which build is actually running is a fact to
 # read rather than something to infer from which routes 404.
-FW_VERSION = "2026.11.05-heldtime-1"
+FW_VERSION = "2026.11.05-steptiming-1"
 
 # The longest a single /press may hold a key down.
 MAX_HOLD = 1.0
@@ -173,17 +173,51 @@ if KEYCODES:
     sys.modules.pop("keycodes", None)
 
 
+# Serving one HTTP request costs the board about 40-50ms, measured. Steps
+# wait on an absolute deadline, so a request served in the middle of a step
+# costs nothing: the loop simply has less left to wait. The last poll before
+# the deadline is the one that hurts, because it can overrun the deadline by
+# however long it took to serve. So polling stops this far out and the rest
+# of the wait is spun, which costs the board nothing it was going to use.
+POLL_BLACKOUT_NS = 60000000
+
+
+def wait_until(server, runner, end_time, slice_ns):
+    """Waits for a deadline, serving the web server until the deadline is
+    too close to risk another request. True if it was asked to stop.
+
+    monotonic_ns, not monotonic: monotonic is a float that loses resolution
+    the longer the board has been up, and these runs go on for hours. Whole
+    nanoseconds don't drift.
+    """
+    while True:
+        remaining = end_time - time.monotonic_ns()
+        if remaining <= 0:
+            return False
+        if remaining <= POLL_BLACKOUT_NS:
+            # Close in. No polling, no sleeping: sleep granularity is the
+            # last thing between the key and its deadline.
+            continue
+        server.poll()
+        if runner.stop_requested:
+            return True
+        # Never sleep past the blackout, or the spin above never happens and
+        # the overshoot comes back.
+        nap = end_time - POLL_BLACKOUT_NS - time.monotonic_ns()
+        if nap > slice_ns:
+            nap = slice_ns
+        if nap > 0:
+            time.sleep(nap / 1000000000)
+
+
 def make_sleep_fn(server, runner):
     def sleep_fn(duration):
-        # monotonic_ns, not monotonic: monotonic is a float that loses
-        # resolution the longer the board has been up, and these runs go on
-        # for hours. Whole nanoseconds don't drift.
-        end_time = time.monotonic_ns() + int(duration * 1000000000)
-        while time.monotonic_ns() < end_time:
-            server.poll()
-            if runner.stop_requested:
-                return
-            time.sleep(0.1)
+        wait_until(
+            server,
+            runner,
+            time.monotonic_ns() + int(duration * 1000000000),
+            100000000,
+        )
 
     return sleep_fn
 
@@ -200,7 +234,11 @@ try:
     # A client that connects and says nothing must not park the main loop.
     server.socket_timeout = 2
 
-    runner = ScriptRunner(SCRIPT, press_fn, None, keyboard.release_all, server.poll)
+    # No tick_fn. It ran before every step and its cost landed wholly in the
+    # gap between two steps, where no deadline absorbs it: one gap per five
+    # seconds came out ~50ms long, in a different place each run. wait_until
+    # polls inside every step instead, which is where it is free.
+    runner = ScriptRunner(SCRIPT, press_fn, None, keyboard.release_all)
     runner.sleep_fn = make_sleep_fn(server, runner)
     # Playback holds keep the board answering. See make_playback_press.
     runner.press_fn = make_playback_press(server, runner)

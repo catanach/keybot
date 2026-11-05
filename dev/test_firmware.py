@@ -128,11 +128,19 @@ class RealFirmwareTest(unittest.TestCase):
             self.assertLess(sent_size, repo_size, name)
 
     def test_every_file_sent_is_within_what_the_board_has_taken(self):
-        # 12.6KB arrived and ran on the real board; 18.9KB failed with a
-        # MemoryError. This guards the margin, so a file growing back past
-        # what the board can hold fails here rather than on the hardware.
+        # This bounds the over-the-air deploy, where the whole file arrives
+        # as one string held in RAM. 12.6KB arrived and ran on the real
+        # board; 18.9KB failed with a MemoryError. The limit is the proven
+        # figure, not a round number below it, and anything above it is
+        # untested rather than known bad.
+        #
+        # It does not bound a USB deploy, which is how firmware actually
+        # reaches the board now: there the board only imports the file, and
+        # a freshly flashed board reports 98KB of free heap. If this starts
+        # blocking real work, the thing to do is measure the real ceiling on
+        # the hardware rather than nudge the number.
         for name, _repo_size, sent_size in firmware.firmware_sizes():
-            self.assertLess(sent_size, 12000, name + " is too big to send")
+            self.assertLess(sent_size, 12600, name + " is too big to send")
 
 
 class CodeAndRunnerStayCompatibleTest(unittest.TestCase):
@@ -256,6 +264,198 @@ class KeyUpReportsTheHoldTest(unittest.TestCase):
             self.body_of("status_handler"),
             "/status does not report the firmware version",
         )
+
+
+MS = 1000000  # nanoseconds in a millisecond
+
+
+class FakeClock:
+    """Advances only when something takes time: a sleep, a poll, or a turn
+    of a spin loop. A real spin burns real time, so reading the clock costs
+    a microsecond, which is what lets the blackout spin terminate here.
+    """
+
+    def __init__(self):
+        self.now = 1000 * MS
+        self.slept = []
+
+    def monotonic_ns(self):
+        self.now += 1000  # a microsecond per turn of a spin
+        return self.now
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.now += int(seconds * 1000000000)
+
+
+class FakeServer:
+    """A web server whose poll costs real time, which is the thing that was
+    overrunning step deadlines."""
+
+    def __init__(self, clock, cost_ns=0):
+        self.clock = clock
+        self.cost_ns = cost_ns
+        self.polls = 0
+        self.poll_times = []
+
+    def poll(self):
+        self.polls += 1
+        self.poll_times.append(self.clock.now)
+        self.clock.now += self.cost_ns
+
+
+class FakeRunner:
+    def __init__(self, stop_after_polls=None):
+        self.stop_requested = False
+        self.stop_after_polls = stop_after_polls
+
+
+class StepsEndOnTimeTest(unittest.TestCase):
+    """A step that overshoots its deadline is the whole of the drift Rosy
+    saw: the same script from the same state gave slightly different
+    results, because serving a status request on the last poll of a step
+    stretched that step by ~50ms, in a different place each run.
+
+    wait_until is lifted out of code.py and run against a fake clock, which
+    is the only way to assert on this exactly. code.py itself cannot be
+    imported here: it needs wifi, usb_hid and the adafruit libraries.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        source = (firmware.FIRMWARE_DIR / "code.py").read_text()
+        tree = ast.parse(source)
+        wanted = ("wait_until",)
+        kept = [
+            node
+            for node in tree.body
+            if (isinstance(node, ast.FunctionDef) and node.name in wanted)
+            or (
+                isinstance(node, ast.Assign)
+                and getattr(node.targets[0], "id", "") == "POLL_BLACKOUT_NS"
+            )
+        ]
+        cls.assertTrue(
+            cls, len(kept) == 2, "wait_until and POLL_BLACKOUT_NS must be module level"
+        )
+        cls.module = ast.Module(body=kept, type_ignores=[])
+        cls.code = compile(ast.fix_missing_locations(cls.module), "code.py", "exec")
+
+    def load(self, clock):
+        ns = {"time": clock}
+        exec(self.code, ns)
+        return ns["wait_until"], ns["POLL_BLACKOUT_NS"]
+
+    def run_wait(self, duration_ns, poll_cost_ns=0):
+        clock = FakeClock()
+        wait_until, blackout = self.load(clock)
+        server = FakeServer(clock, poll_cost_ns)
+        runner = FakeRunner()
+        started = clock.now
+        end_time = started + duration_ns
+        stopped = wait_until(server, runner, end_time, 100 * MS)
+        return {
+            "overshoot_ns": clock.now - end_time,
+            "polls": server.polls,
+            "server": server,
+            "clock": clock,
+            "blackout": blackout,
+            "stopped": stopped,
+            "end_time": end_time,
+        }
+
+    def test_a_wait_does_not_run_past_its_deadline(self):
+        # The old loop slept a full 100ms slice without looking at how much
+        # was left, so a wait ran 0 to 100ms long depending on where its
+        # deadline fell between slice boundaries. Durations that are exact
+        # multiples of the slice land on the deadline by luck and hide it,
+        # so this sweeps: 1.4s is the lucky case, 1.37s is what a real
+        # recording produces.
+        for ms in (1400, 1370, 1230, 1050, 999, 760, 333, 150, 101):
+            r = self.run_wait(ms * MS)
+            self.assertLess(
+                r["overshoot_ns"],
+                MS,
+                "a {}ms wait overshot by {}ms".format(ms, r["overshoot_ns"] / MS),
+            )
+
+    def test_a_hold_of_any_length_ends_on_time(self):
+        for ms in (2060, 1240, 870, 450, 230, 100):
+            clock = FakeClock()
+            wait_until, _ = self.load(clock)
+            server = FakeServer(clock, 50 * MS)
+            end_time = clock.now + ms * MS
+            wait_until(server, FakeRunner(), end_time, 2 * MS)
+            overshoot = clock.now - end_time
+            self.assertLess(
+                overshoot,
+                MS,
+                "a {}ms hold overshot by {}ms".format(ms, overshoot / MS),
+            )
+
+    def test_a_hold_does_not_run_past_its_deadline(self):
+        r = self.run_wait(100 * MS)
+        self.assertLess(r["overshoot_ns"], MS)
+
+    def test_a_slow_request_mid_step_costs_the_step_nothing(self):
+        # A poll is free in the middle: the deadline is absolute, so the
+        # loop simply has less left to wait afterwards.
+        r = self.run_wait(2000 * MS, poll_cost_ns=50 * MS)
+        self.assertLess(
+            r["overshoot_ns"],
+            MS,
+            "a 50ms request stretched the step by {}ms".format(
+                r["overshoot_ns"] / MS
+            ),
+        )
+        self.assertGreater(r["polls"], 0, "it stopped serving the web server entirely")
+
+    def test_nothing_is_served_once_the_deadline_is_close(self):
+        # This is what stops the last poll overrunning: inside the blackout
+        # there is no poll left to overrun with.
+        r = self.run_wait(2000 * MS, poll_cost_ns=50 * MS)
+        latest = max(r["server"].poll_times)
+        self.assertLessEqual(
+            latest,
+            r["end_time"] - r["blackout"],
+            "a request was served inside the blackout",
+        )
+
+    def test_it_never_sleeps_into_the_blackout(self):
+        # A sleep that lands inside the blackout skips the spin, and the
+        # overshoot comes straight back.
+        r = self.run_wait(1400 * MS)
+        for seconds in r["clock"].slept:
+            self.assertGreater(seconds, 0, "slept for nothing, which is a busy loop")
+
+    def test_the_web_server_still_gets_served_during_a_long_wait(self):
+        r = self.run_wait(5000 * MS)
+        self.assertGreater(
+            r["polls"], 10, "only {} polls in a 5s wait".format(r["polls"])
+        )
+
+    def test_stop_is_obeyed_and_said_so(self):
+        clock = FakeClock()
+        wait_until, _ = self.load(clock)
+        server = FakeServer(clock)
+        runner = FakeRunner()
+
+        real_poll = server.poll
+
+        def poll_then_stop():
+            real_poll()
+            runner.stop_requested = True
+
+        server.poll = poll_then_stop
+        stopped = wait_until(server, runner, clock.now + 10000 * MS, 100 * MS)
+        self.assertTrue(stopped, "a stop during a step was not reported")
+
+    def test_a_deadline_already_passed_returns_at_once(self):
+        clock = FakeClock()
+        wait_until, _ = self.load(clock)
+        server = FakeServer(clock)
+        wait_until(server, FakeRunner(), clock.now - 500 * MS, 100 * MS)
+        self.assertEqual(server.polls, 0, "it served requests on a step already due")
 
 
 if __name__ == "__main__":
